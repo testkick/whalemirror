@@ -1,0 +1,28 @@
+services:
+  whalemirror:
+    build: .
+    restart: unless-stopped
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:?set in .env}
+      APP_SECRET: ${APP_SECRET:?set in .env}
+      DB_PATH: /data/whalemirror.db
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+    volumes:
+      - wm_data:/data
+    # Bind to localhost only — Caddy fronts it with HTTPS.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  wm_data:
+  caddy_data:
+  caddy_config:

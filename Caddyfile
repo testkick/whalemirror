@@ -1,0 +1,5 @@
+# Replace with your domain (A record pointing at the OCI instance public IP).
+# Caddy provisions and renews the TLS cert automatically.
+{$DOMAIN:localhost} {
+    reverse_proxy 127.0.0.1:8000
+}
