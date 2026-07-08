@@ -48,9 +48,13 @@ class ConsensusEngine:
 
     # ── Stage 1: whales ──────────────────────────────────────────────────
     def _fetch_leaderboard(self, window: str, limit: int) -> list[dict]:
+        # Current API: /v1/leaderboard?timePeriod=MONTH&orderBy=PNL&limit=50
+        period = {"1d": "DAY", "7d": "WEEK", "30d": "MONTH", "all": "ALL"}.get(window, "MONTH")
         variants = [
+            ("/v1/leaderboard", {"category": "OVERALL", "timePeriod": period,
+                                 "orderBy": "PNL", "limit": min(limit, 50)}),
+            # legacy shapes kept as fallbacks
             ("/leaderboard", {"window": window, "limit": limit, "rankType": "profit"}),
-            ("/v2/leaderboard", {"window": window, "limit": limit, "rankType": "profit"}),
             ("/leaderboard", {"period": window, "limit": limit, "type": "pnl"}),
         ]
         for path, params in variants:
