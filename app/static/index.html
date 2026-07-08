@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhaleMirror — consensus console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<!-- Login gate -->
+<div id="login" class="login hidden">
+  <div class="login-card">
+    <div class="wordmark">WHALE<span>MIRROR</span></div>
+    <p class="login-sub">Consensus console · Polymarket</p>
+    <input id="password" type="password" placeholder="Console password" autocomplete="current-password">
+    <button id="login-btn" class="btn btn-primary">Sign in</button>
+    <p id="login-error" class="error hidden"></p>
+  </div>
+</div>
+
+<!-- App shell -->
+<div id="app" class="hidden">
+  <header>
+    <div class="wordmark">WHALE<span>MIRROR</span></div>
+    <div class="status-strip">
+      <span id="mode-badge" class="badge badge-dry">DRY RUN</span>
+      <span class="stat"><label>Last sweep</label><b id="last-sweep">—</b></span>
+      <span class="stat"><label>Signals</label><b id="signal-count">—</b></span>
+      <span class="stat"><label>Spent today</label><b id="spent-today">$0</b></span>
+      <span id="sonar" class="sonar" title="Engine status"></span>
+    </div>
+    <div class="header-actions">
+      <button id="refresh-btn" class="btn">Run sweep</button>
+      <button id="logout-btn" class="btn btn-ghost">Sign out</button>
+    </div>
+  </header>
+
+  <div id="progress" class="progress hidden"></div>
+  <div id="banner" class="banner hidden"></div>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="signals">Signals</button>
+    <button class="tab" data-tab="activity">Activity</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+    <!-- SIGNALS -->
+    <section id="tab-signals" class="tab-panel">
+      <div id="signals-empty" class="empty hidden">
+        No consensus signals yet. Run a sweep to scan the leaderboard whales.
+      </div>
+      <div id="signals-list"></div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section id="tab-activity" class="tab-panel hidden">
+      <div id="activity-empty" class="empty hidden">No mirror activity yet.</div>
+      <table class="activity-table">
+        <thead><tr><th>When</th><th>Market</th><th>Side</th><th class="num">USD</th><th class="num">Price</th><th>Mode</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody id="activity-body"></tbody>
+      </table>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="tab-panel hidden">
+      <div class="settings-grid">
+
+        <div class="card">
+          <h2>Execution</h2>
+          <div class="field-row">
+            <label class="switch-label">
+              <input type="checkbox" id="s-dry-run"> Dry run
+              <span class="hint">Simulate every order. Turn off only when you mean it.</span>
+            </label>
+          </div>
+          <div class="field-row">
+            <label class="switch-label">
+              <input type="checkbox" id="s-auto-mirror"> Auto-mirror new signals
+              <span class="hint">Each sweep mirrors new signals above the score floor, once each.</span>
+            </label>
+          </div>
+          <div class="field-pair">
+            <label>Per-trade size (USD)<input type="number" id="s-per-trade" min="1" step="1"></label>
+            <label>Daily cap (USD)<input type="number" id="s-daily-cap" min="1" step="1"></label>
+          </div>
+          <div class="field-pair">
+            <label>Max slippage (¢)<input type="number" id="s-slippage" min="0" max="20" step="0.5"></label>
+            <label>Score floor for auto<input type="number" id="s-score-floor" min="0" step="0.5"></label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Consensus engine</h2>
+          <div class="field-pair">
+            <label>Min whales per signal<input type="number" id="s-min-whales" min="2" max="10" step="1"></label>
+            <label>Dominance floor<input type="number" id="s-dominance" min="0.5" max="1" step="0.05"></label>
+          </div>
+          <div class="field-pair">
+            <label>Sweep interval (min)<input type="number" id="s-refresh" min="10" step="5"></label>
+          </div>
+          <button id="save-settings" class="btn btn-primary">Save settings</button>
+          <span id="settings-saved" class="saved hidden">Saved</span>
+        </div>
+
+        <div class="card card-danger">
+          <h2>Trading credentials</h2>
+          <p class="hint" id="creds-status">Not configured — the console is view + dry-run only.</p>
+          <label>Polymarket private key
+            <input type="password" id="c-key" placeholder="Exported from Polymarket settings" autocomplete="off">
+          </label>
+          <label>Funder (wallet) address
+            <input type="text" id="c-funder" placeholder="0x…" autocomplete="off">
+          </label>
+          <label>Signature type
+            <select id="c-sigtype">
+              <option value="1">1 — Email / Magic.Link account</option>
+              <option value="2">2 — Browser wallet (MetaMask etc.)</option>
+              <option value="0">0 — EOA direct</option>
+            </select>
+          </label>
+          <div class="btn-row">
+            <button id="save-creds" class="btn btn-primary">Save credentials</button>
+            <button id="clear-creds" class="btn btn-ghost">Remove</button>
+          </div>
+          <p class="hint">The key is encrypted at rest with your server's APP_SECRET and is never sent back to the browser. Removing credentials also re-enables dry run.</p>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <footer>Signals are informational. Mirroring executes real trades when dry run is off — nothing here is financial advice.</footer>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
