@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import consensus, mirror, store
+from . import consensus, mirror, store, tracker
 
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -179,6 +179,7 @@ def activity(request: Request):
 # ── Scheduler ─────────────────────────────────────────────────────────────
 async def scheduler():
     await asyncio.sleep(5)
+    last_track = 0.0
     while True:
         settings = store.get_settings()
         interval = max(10, int(settings["refresh_minutes"])) * 60
@@ -192,6 +193,12 @@ async def scheduler():
                 _state["last_error"] = str(e)
             finally:
                 _state.update(refreshing=False, progress="")
+        if time.time() - last_track > 300:
+            last_track = time.time()
+            try:
+                await asyncio.to_thread(tracker.refresh_positions)
+            except Exception:  # noqa: BLE001 — tracking must never kill the loop
+                pass
         await asyncio.sleep(60)
 
 
@@ -199,6 +206,17 @@ async def scheduler():
 async def startup():
     store.init()
     asyncio.create_task(scheduler())
+
+
+@app.get("/api/performance")
+def performance(request: Request):
+    require_session(request)
+    return {
+        "summary": store.performance_summary(),
+        "positions": store.all_positions(),
+        "snapshots": {"dry_run": store.snapshots("dry_run"),
+                      "live": store.snapshots("live")},
+    }
 
 
 @app.get("/healthz")

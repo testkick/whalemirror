@@ -52,6 +52,31 @@ def init():
             first_seen REAL NOT NULL,
             last_seen REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL NOT NULL,
+            signal_id TEXT NOT NULL,
+            title TEXT,
+            outcome TEXT,
+            condition_id TEXT,
+            outcome_index INTEGER,
+            token_id TEXT,
+            mode TEXT,             -- 'dry_run' | 'live'
+            usd REAL,              -- cost basis
+            entry_price REAL,
+            shares REAL,
+            status TEXT DEFAULT 'open',   -- 'open' | 'won' | 'lost'
+            last_price REAL,
+            pnl REAL DEFAULT 0,
+            closed_ts REAL
+        );
+        CREATE TABLE IF NOT EXISTS pnl_snapshots (
+            ts REAL NOT NULL,
+            mode TEXT NOT NULL,
+            cost REAL,             -- open cost basis
+            value REAL,            -- open mark-to-market value
+            realized REAL          -- cumulative realized pnl
+        );
         CREATE TABLE IF NOT EXISTS mirrors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts REAL NOT NULL,
@@ -197,3 +222,82 @@ def spent_today_usd() -> float:
             "SELECT COALESCE(SUM(usd), 0) AS s FROM mirrors "
             "WHERE ts >= ? AND status='ok' AND mode='live'", (midnight,)).fetchone()
     return float(row["s"])
+
+
+# ── Position tracking ─────────────────────────────────────────────────────
+def add_position(signal: dict, usd: float, price: float, token_id: str, mode: str):
+    shares = usd / price if price > 0 else 0.0
+    with db() as conn:
+        conn.execute("""
+            INSERT INTO positions (ts, signal_id, title, outcome, condition_id,
+                outcome_index, token_id, mode, usd, entry_price, shares, last_price, pnl)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        """, (time.time(), signal["id"], signal["title"], signal["outcome"],
+              signal["condition_id"], signal["outcome_index"], token_id, mode,
+              usd, price, shares, price))
+
+
+def open_positions() -> list[dict]:
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM positions WHERE status='open'").fetchall()
+    return [dict(r) for r in rows]
+
+
+def all_positions(limit: int = 200) -> list[dict]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM positions ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_position(pos_id: int, last_price: float, pnl: float,
+                  status: str = "open", closed: bool = False):
+    with db() as conn:
+        if closed:
+            conn.execute("UPDATE positions SET last_price=?, pnl=?, status=?, closed_ts=? WHERE id=?",
+                         (last_price, pnl, status, time.time(), pos_id))
+        else:
+            conn.execute("UPDATE positions SET last_price=?, pnl=? WHERE id=?",
+                         (last_price, pnl, pos_id))
+
+
+def add_snapshot(mode: str, cost: float, value: float, realized: float):
+    with db() as conn:
+        conn.execute("INSERT INTO pnl_snapshots (ts, mode, cost, value, realized) VALUES (?, ?, ?, ?, ?)",
+                     (time.time(), mode, cost, value, realized))
+
+
+def snapshots(mode: str | None = None, limit: int = 2000) -> list[dict]:
+    q = "SELECT * FROM pnl_snapshots"
+    args: tuple = ()
+    if mode:
+        q += " WHERE mode=?"
+        args = (mode,)
+    q += " ORDER BY ts ASC LIMIT ?"
+    with db() as conn:
+        rows = conn.execute(q, args + (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def performance_summary() -> dict:
+    out = {}
+    with db() as conn:
+        for mode in ("dry_run", "live"):
+            open_rows = conn.execute(
+                "SELECT COALESCE(SUM(usd),0) c, COALESCE(SUM(pnl),0) u, COUNT(*) n "
+                "FROM positions WHERE status='open' AND mode=?", (mode,)).fetchone()
+            closed = conn.execute(
+                "SELECT COALESCE(SUM(pnl),0) r, "
+                "SUM(CASE WHEN status='won' THEN 1 ELSE 0 END) w, "
+                "SUM(CASE WHEN status='lost' THEN 1 ELSE 0 END) l "
+                "FROM positions WHERE status!='open' AND mode=?", (mode,)).fetchone()
+            wins, losses = closed["w"] or 0, closed["l"] or 0
+            out[mode] = {
+                "open_count": open_rows["n"], "open_cost": open_rows["c"],
+                "unrealized": round(open_rows["u"], 2),
+                "realized": round(closed["r"], 2),
+                "total": round(open_rows["u"] + closed["r"], 2),
+                "wins": wins, "losses": losses,
+                "win_rate": round(wins / (wins + losses), 3) if (wins + losses) else None,
+            }
+    return out

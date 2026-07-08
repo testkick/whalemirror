@@ -98,6 +98,7 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
     if mode == "dry_run":
         detail = f"DRY RUN: would buy ${usd:.2f} of '{signal['outcome']}' at ~{fill_price:.3f} (token {token_id[:12]}…)"
         store.log_mirror(signal, usd, fill_price, mode, "ok", detail)
+        store.add_position(signal, usd, fill_price, token_id, mode)
         return {"status": "ok", "detail": detail, "mode": mode}
 
     try:
@@ -110,6 +111,7 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
         resp = client.post_order(order, OrderType.FOK)
         detail = f"LIVE: ${usd:.2f} '{signal['outcome']}' @ ~{fill_price:.3f} → {resp}"
         store.log_mirror(signal, usd, fill_price, mode, "ok", str(detail))
+        store.add_position(signal, usd, fill_price, token_id, mode)
         return {"status": "ok", "detail": detail, "mode": mode}
     except Exception as e:  # noqa: BLE001 — surface everything to the log
         return fail("error", f"order failed: {e}", fill_price)
