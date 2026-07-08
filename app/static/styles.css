@@ -248,3 +248,21 @@ footer {
   .signal { grid-template-columns: 1fr; }
   .signal-actions { grid-row: auto; justify-content: space-between; }
 }
+
+/* ── Performance ──────────────────────────────────────────────────── */
+.stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.stat-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px 14px;
+}
+.stat-card label {
+  display: block; font-family: var(--display); font-weight: 600; font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+}
+.stat-card b { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+.pnl-pos { color: var(--kelp); }
+.pnl-neg { color: var(--coral); }
+.chart-card { margin-bottom: 14px; }
+.tag-won { color: var(--kelp); border: 1px solid var(--kelp); }
+.tag-lost { color: var(--coral); border: 1px solid var(--coral); }
+.tag-open { color: var(--sonar); border: 1px solid var(--sonar); }

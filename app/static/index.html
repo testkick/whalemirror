@@ -43,6 +43,7 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="signals">Signals</button>
+    <button class="tab" data-tab="performance">Performance</button>
     <button class="tab" data-tab="activity">Activity</button>
     <button class="tab" data-tab="settings">Settings</button>
   </nav>
@@ -54,6 +55,30 @@
         No consensus signals yet. Run a sweep to scan the leaderboard whales.
       </div>
       <div id="signals-list"></div>
+    </section>
+
+    <!-- PERFORMANCE -->
+    <section id="tab-performance" class="tab-panel hidden">
+      <div class="stat-cards">
+        <div class="stat-card"><label>Total P&L</label><b id="p-total">—</b></div>
+        <div class="stat-card"><label>Realized</label><b id="p-realized">—</b></div>
+        <div class="stat-card"><label>Unrealized</label><b id="p-unrealized">—</b></div>
+        <div class="stat-card"><label>Win rate</label><b id="p-winrate">—</b></div>
+        <div class="stat-card"><label>Open / Closed</label><b id="p-counts">—</b></div>
+      </div>
+      <div class="card chart-card">
+        <h2>Portfolio P&L over time</h2>
+        <canvas id="pnl-chart" height="90"></canvas>
+      </div>
+      <div class="card chart-card">
+        <h2>P&L by position</h2>
+        <canvas id="pos-chart" height="90"></canvas>
+      </div>
+      <div id="performance-empty" class="empty hidden">No tracked positions yet — mirror a signal (dry run counts) and the tracker will start marking it to market.</div>
+      <table class="activity-table" id="positions-table">
+        <thead><tr><th>Opened</th><th>Market</th><th>Side</th><th class="num">Cost</th><th class="num">Entry</th><th class="num">Last</th><th class="num">P&L</th><th>Mode</th><th>Status</th></tr></thead>
+        <tbody id="positions-body"></tbody>
+      </table>
     </section>
 
     <!-- ACTIVITY -->
@@ -136,6 +161,7 @@
   <footer>Signals are informational. Mirroring executes real trades when dry run is off — nothing here is financial advice.</footer>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

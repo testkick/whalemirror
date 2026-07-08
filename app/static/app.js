@@ -40,6 +40,7 @@ document.querySelectorAll(".tab").forEach((t) => {
     t.classList.add("active");
     $("tab-" + t.dataset.tab).classList.remove("hidden");
     if (t.dataset.tab === "activity") loadActivity();
+    if (t.dataset.tab === "performance") loadPerformance();
     if (t.dataset.tab === "settings") loadSettings();
   };
 });
@@ -161,6 +162,92 @@ async function loadActivity() {
       <td><span class="tag ${m.status === "ok" ? "tag-ok" : m.status === "error" ? "tag-err" : "tag-skip"}">${m.status}</span></td>
       <td>${esc(m.detail || "")}</td>
     </tr>`).join("");
+}
+
+/* ── Performance ───────────────────────────────────────────────────── */
+let pnlChart = null, posChart = null;
+const CSS = getComputedStyle(document.documentElement);
+const C = (v) => CSS.getPropertyValue(v).trim();
+const money = (n) => (n >= 0 ? "+$" : "-$") + Math.abs(n).toFixed(2);
+const pnlCls = (n) => (n >= 0 ? "pnl-pos" : "pnl-neg");
+
+async function loadPerformance() {
+  const data = await api("/api/performance");
+  const d = data.summary.dry_run, l = data.summary.live;
+  const total = d.total + l.total;
+  const realized = d.realized + l.realized;
+  const unreal = d.unrealized + l.unrealized;
+  const wins = d.wins + l.wins, losses = d.losses + l.losses;
+
+  const set = (id, val, colored = true) => {
+    const el = $(id);
+    el.textContent = typeof val === "number" ? money(val) : val;
+    if (colored && typeof val === "number") el.className = pnlCls(val);
+  };
+  set("p-total", total);
+  set("p-realized", realized);
+  set("p-unrealized", unreal);
+  $("p-winrate").textContent = wins + losses ? ((wins / (wins + losses)) * 100).toFixed(0) + "%" : "—";
+  const openN = d.open_count + l.open_count;
+  $("p-counts").textContent = `${openN} / ${wins + losses}`;
+
+  $("performance-empty").classList.toggle("hidden", data.positions.length > 0);
+
+  // Cumulative P&L line (dry vs live), from snapshots
+  const mkSeries = (snaps) => snaps.map((s) => ({
+    x: new Date(s.ts * 1000).toLocaleString(),
+    y: +(s.realized + (s.value - s.cost)).toFixed(2),
+  }));
+  const dry = mkSeries(data.snapshots.dry_run), live = mkSeries(data.snapshots.live);
+  const labels = (dry.length >= live.length ? dry : live).map((p) => p.x);
+  if (pnlChart) pnlChart.destroy();
+  pnlChart = new Chart($("pnl-chart"), {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "Dry run", data: dry.map((p) => p.y), borderColor: C("--amber"), backgroundColor: "transparent", tension: 0.25, pointRadius: 0 },
+      { label: "Live", data: live.map((p) => p.y), borderColor: C("--sonar"), backgroundColor: "transparent", tension: 0.25, pointRadius: 0 },
+    ]},
+    options: chartOpts(),
+  });
+
+  // Per-position P&L bars, green/red
+  const pos = [...data.positions].sort((a, b) => a.ts - b.ts);
+  if (posChart) posChart.destroy();
+  posChart = new Chart($("pos-chart"), {
+    type: "bar",
+    data: {
+      labels: pos.map((p) => p.title.slice(0, 28) + (p.title.length > 28 ? "…" : "")),
+      datasets: [{
+        label: "P&L (USD)",
+        data: pos.map((p) => p.pnl),
+        backgroundColor: pos.map((p) => p.pnl >= 0 ? C("--kelp") : C("--coral")),
+      }],
+    },
+    options: chartOpts(false),
+  });
+
+  // Ledger table
+  $("positions-body").innerHTML = [...data.positions].map((p) => `
+    <tr>
+      <td>${new Date(p.ts * 1000).toLocaleDateString()}</td>
+      <td>${esc(p.title || "")}</td>
+      <td>${esc(p.outcome || "")}</td>
+      <td class="num">$${p.usd.toFixed(2)}</td>
+      <td class="num">${p.entry_price.toFixed(3)}</td>
+      <td class="num">${(p.last_price ?? p.entry_price).toFixed(3)}</td>
+      <td class="num ${pnlCls(p.pnl)}">${money(p.pnl)}</td>
+      <td><span class="tag ${p.mode === "live" ? "tag-live" : "tag-dry"}">${p.mode}</span></td>
+      <td><span class="tag tag-${p.status}">${p.status}</span></td>
+    </tr>`).join("");
+}
+
+function chartOpts(legend = true) {
+  const grid = { color: C("--line") }, ticks = { color: C("--muted"), font: { family: "IBM Plex Mono", size: 10 } };
+  return {
+    responsive: true,
+    plugins: { legend: { display: legend, labels: { color: C("--ink"), font: { family: "Barlow" } } } },
+    scales: { x: { grid, ticks: { ...ticks, maxTicksLimit: 8 } }, y: { grid, ticks } },
+  };
 }
 
 /* ── Settings ──────────────────────────────────────────────────────── */
