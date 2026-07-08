@@ -1,16 +1,26 @@
-"""Whale consensus engine — leaderboard → positions → consensus signals."""
+"""Whale consensus engine — leaderboard → positions → consensus signals.
+
+Whale discovery fans out across all leaderboard categories and both time
+periods (MONTH + ALL), since /v1/leaderboard caps at 50 rows per request.
+Position fetching runs in a small thread pool so a several-hundred-whale
+sweep stays in the couple-of-minutes range.
+"""
 
 import hashlib
 import math
+import threading
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
 DATA_API = "https://data-api.polymarket.com"
 
+CATEGORIES = ["OVERALL", "POLITICS", "SPORTS", "ESPORTS", "CRYPTO", "CULTURE",
+              "MENTIONS", "WEATHER", "ECONOMICS", "TECH", "FINANCE"]
+
 DEFAULT_CONFIG = {
-    "top": 50,
     "min_roi": 0.02,
     "min_whales": 3,
     "dominance": 0.75,
@@ -19,7 +29,9 @@ DEFAULT_CONFIG = {
     "price_floor": 0.05,
     "price_ceiling": 0.95,
     "max_positions_per_whale": 300,
-    "request_delay": 0.25,
+    "request_delay": 0.15,      # per worker thread
+    "workers": 4,               # parallel position fetchers
+    "max_whales": 500,          # hard bound on sweep size (top by weight)
 }
 
 
@@ -27,7 +39,8 @@ class ConsensusEngine:
     def __init__(self, config: dict | None = None):
         self.config = {**DEFAULT_CONFIG, **(config or {})}
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "whalemirror/0.1"})
+        self.session.headers.update({"User-Agent": "whalemirror/0.2"})
+        self._lock = threading.Lock()
 
     # ── HTTP ──────────────────────────────────────────────────────────────
     def _get(self, path: str, **params):
@@ -47,61 +60,83 @@ class ConsensusEngine:
         return None
 
     # ── Stage 1: whales ──────────────────────────────────────────────────
-    def _fetch_leaderboard(self, window: str, limit: int) -> list[dict]:
-        # Current API: /v1/leaderboard?timePeriod=MONTH&orderBy=PNL&limit=50
-        period = {"1d": "DAY", "7d": "WEEK", "30d": "MONTH", "all": "ALL"}.get(window, "MONTH")
-        variants = [
-            ("/v1/leaderboard", {"category": "OVERALL", "timePeriod": period,
-                                 "orderBy": "PNL", "limit": min(limit, 50)}),
-            # legacy shapes kept as fallbacks
-            ("/leaderboard", {"window": window, "limit": limit, "rankType": "profit"}),
-            ("/leaderboard", {"period": window, "limit": limit, "type": "pnl"}),
-        ]
-        for path, params in variants:
-            data = self._get(path, **params)
-            if not data:
-                continue
-            rows = data if isinstance(data, list) else data.get("leaderboard") or data.get("data") or []
-            out = []
+    def _fetch_board(self, period: str, category: str) -> list[dict]:
+        """One leaderboard page, normalized. Tries offset pagination
+        defensively — if the API ignores offset (returns the same first
+        address), we stop after page one."""
+        rows_out, offset, first_seen = [], 0, None
+        while True:
+            params = {"category": category, "timePeriod": period,
+                      "orderBy": "PNL", "limit": 50}
+            if offset:
+                params["offset"] = offset
+            data = self._get("/v1/leaderboard", **params)
+            rows = data if isinstance(data, list) else (data or {}).get("data") or []
+            if not rows:
+                break
+            first_addr = (rows[0].get("proxyWallet") or "").lower()
+            if offset and first_addr == first_seen:
+                break  # offset unsupported — same page came back
+            if not offset:
+                first_seen = first_addr
             for row in rows:
-                addr = row.get("proxyWallet") or row.get("address") or row.get("user") or row.get("wallet")
+                addr = row.get("proxyWallet") or row.get("address") or row.get("wallet")
                 if not addr:
                     continue
-                out.append({
+                rows_out.append({
                     "address": addr.lower(),
                     "name": row.get("name") or row.get("userName") or row.get("pseudonym") or addr[:10],
                     "pnl": float(row.get("amount") or row.get("pnl") or row.get("profit") or 0),
                     "volume": float(row.get("volume") or row.get("vol") or 0),
                 })
-            if out:
-                return out
-        return []
+            if len(rows) < 50 or offset >= 200:   # stop at 5 pages / board
+                break
+            offset += 50
+        return rows_out
 
-    def select_whales(self) -> dict[str, dict]:
+    def select_whales(self, progress=None) -> dict[str, dict]:
         cfg = self.config
-        board_30d = self._fetch_leaderboard("30d", cfg["top"])
-        board_all = self._fetch_leaderboard("all", cfg["top"])
-        if not board_30d and not board_all:
+        boards: dict[str, list[dict]] = {}
+        for pi, period in enumerate(("MONTH", "ALL")):
+            for ci, cat in enumerate(CATEGORIES):
+                if progress:
+                    progress(pi * len(CATEGORIES) + ci + 1, 2 * len(CATEGORIES),
+                             f"leaderboard {period}/{cat}")
+                boards[f"{period}:{cat}"] = self._fetch_board(period, cat)
+                time.sleep(cfg["request_delay"])
+
+        if not any(boards.values()):
             raise RuntimeError("Leaderboard fetch failed on all endpoint variants")
 
-        addrs_30d = {w["address"] for w in board_30d}
-        addrs_all = {w["address"] for w in board_all}
+        month_addrs = {w["address"] for k, b in boards.items() if k.startswith("MONTH") for w in b}
+        all_addrs = {w["address"] for k, b in boards.items() if k.startswith("ALL") for w in b}
 
         merged: dict[str, dict] = {}
-        for w in board_30d + board_all:
-            cur = merged.setdefault(w["address"], {**w, "pnl": 0.0, "volume": 0.0})
-            cur["pnl"] = max(cur["pnl"], w["pnl"])
-            cur["volume"] = max(cur["volume"], w["volume"])
+        for key, board in boards.items():
+            _, cat = key.split(":")
+            for w in board:
+                cur = merged.setdefault(w["address"],
+                                        {**w, "pnl": 0.0, "volume": 0.0, "categories": set()})
+                cur["pnl"] = max(cur["pnl"], w["pnl"])
+                cur["volume"] = max(cur["volume"], w["volume"])
+                if cat != "OVERALL":
+                    cur["categories"].add(cat)
 
         kept = {}
         for addr, w in merged.items():
             roi = w["pnl"] / w["volume"] if w["volume"] > 0 else 0.0
             if w["volume"] > 0 and roi < cfg["min_roi"]:
-                continue
-            consistency = 1.5 if (addr in addrs_30d and addr in addrs_all) else 1.0
+                continue  # market-maker profile: big volume, thin edge
+            consistency = 1.5 if (addr in month_addrs and addr in all_addrs) else 1.0
             w["roi"] = roi
             w["weight"] = math.log10(1 + max(w["pnl"], 0)) * consistency
+            w["categories"] = sorted(w["categories"])
             kept[addr] = w
+
+        # Bound sweep size: keep the highest-weight whales
+        if len(kept) > cfg["max_whales"]:
+            top = sorted(kept.items(), key=lambda kv: kv[1]["weight"], reverse=True)
+            kept = dict(top[: cfg["max_whales"]])
         return kept
 
     # ── Stage 2: positions ───────────────────────────────────────────────
@@ -139,21 +174,31 @@ class ConsensusEngine:
     # ── Stage 3: consensus ───────────────────────────────────────────────
     def run(self, progress=None) -> list[dict]:
         cfg = self.config
-        whales = self.select_whales()
+        whales = self.select_whales(progress=progress)
         max_weight = max((w["weight"] for w in whales.values()), default=1.0) or 1.0
 
         side_book = defaultdict(list)
         condition_totals = defaultdict(float)
+        done = {"n": 0}
 
-        for i, (addr, w) in enumerate(whales.items(), 1):
-            if progress:
-                progress(i, len(whales), w["name"])
-            for p in self.fetch_positions(addr):
-                key = (p["condition_id"], p["outcome_index"])
-                side_book[key].append({**p, "whale": w["name"],
-                                       "whale_weight": w["weight"] / max_weight})
-                condition_totals[p["condition_id"]] += p["value"]
+        def scan(item):
+            addr, w = item
+            positions = self.fetch_positions(addr)
             time.sleep(cfg["request_delay"])
+            with self._lock:
+                done["n"] += 1
+                if progress:
+                    progress(done["n"], len(whales), f"whale {w['name']}")
+                for p in positions:
+                    key = (p["condition_id"], p["outcome_index"])
+                    side_book[key].append({**p, "whale": w["name"],
+                                           "whale_weight": w["weight"] / max_weight})
+                    condition_totals[p["condition_id"]] += p["value"]
+
+        with ThreadPoolExecutor(max_workers=cfg["workers"]) as pool:
+            futures = [pool.submit(scan, item) for item in whales.items()]
+            for f in as_completed(futures):
+                f.result()  # propagate exceptions
 
         signals = []
         for (condition_id, outcome_index), holdings in side_book.items():
