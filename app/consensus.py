@@ -30,7 +30,7 @@ DEFAULT_CONFIG = {
     "price_ceiling": 0.95,
     "max_positions_per_whale": 300,
     "request_delay": 0.15,      # per worker thread
-    "workers": 4,               # parallel position fetchers
+    "workers": 6,               # parallel position fetchers
     "max_whales": 500,          # hard bound on sweep size (top by weight)
 }
 
@@ -173,8 +173,9 @@ class ConsensusEngine:
 
     # ── Stage 3: consensus ───────────────────────────────────────────────
     def run(self, progress=None) -> list[dict]:
+        from . import discovery  # local import avoids a cycle
         cfg = self.config
-        whales = self.select_whales(progress=progress)
+        whales = discovery.build_pool(self, progress=progress)
         max_weight = max((w["weight"] for w in whales.values()), default=1.0) or 1.0
 
         side_book = defaultdict(list)

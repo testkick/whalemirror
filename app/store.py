@@ -52,6 +52,19 @@ def init():
             first_seen REAL NOT NULL,
             last_seen REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS wallets (
+            address TEXT PRIMARY KEY,
+            name TEXT,
+            source TEXT,           -- 'holders' | 'trades'
+            realized REAL,
+            volume REAL,
+            roi REAL,
+            win_rate REAL,
+            trades INTEGER,
+            weight REAL,
+            qualified INTEGER DEFAULT 0,
+            last_scored REAL
+        );
         CREATE TABLE IF NOT EXISTS positions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts REAL NOT NULL,
@@ -100,7 +113,7 @@ SETTINGS_DEFAULTS = {
     "daily_cap_usd": 100.0,
     "max_slippage": 0.03,          # skip if price moved > 3¢ past the signal
     "min_score_to_mirror": 8.0,
-    "refresh_minutes": 30,
+    "refresh_minutes": 15,
     # engine knobs surfaced in the UI
     "min_whales": 3,
     "dominance": 0.75,
@@ -301,3 +314,39 @@ def performance_summary() -> dict:
                 "win_rate": round(wins / (wins + losses), 3) if (wins + losses) else None,
             }
     return out
+
+
+# ── Wallet score cache (discovery) ────────────────────────────────────────
+def wallets_needing_score(addresses: list[str], stale_before: float) -> list[str]:
+    """Subset of addresses that are unknown or last scored before the cutoff."""
+    if not addresses:
+        return []
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT address, last_scored FROM wallets WHERE address IN (%s)"
+            % ",".join("?" * len(addresses)), addresses).fetchall()
+    known = {r["address"]: r["last_scored"] for r in rows}
+    return [a for a in addresses
+            if a not in known or (known[a] or 0) < stale_before]
+
+
+def upsert_wallet(rec: dict):
+    with db() as conn:
+        conn.execute("""
+            INSERT INTO wallets (address, name, source, realized, volume, roi,
+                                 win_rate, trades, weight, qualified, last_scored)
+            VALUES (:address, :name, :source, :realized, :volume, :roi,
+                    :win_rate, :trades, :weight, :qualified, :last_scored)
+            ON CONFLICT(address) DO UPDATE SET
+                name=excluded.name, source=excluded.source,
+                realized=excluded.realized, volume=excluded.volume,
+                roi=excluded.roi, win_rate=excluded.win_rate,
+                trades=excluded.trades, weight=excluded.weight,
+                qualified=excluded.qualified, last_scored=excluded.last_scored
+        """, rec)
+
+
+def qualified_wallets() -> list[dict]:
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM wallets WHERE qualified=1").fetchall()
+    return [dict(r) for r in rows]
