@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 DATA_API = "https://data-api.polymarket.com"
+GAMMA_API = "https://gamma-api.polymarket.com"
 
 CATEGORIES = ["OVERALL", "POLITICS", "SPORTS", "ESPORTS", "CRYPTO", "CULTURE",
               "MENTIONS", "WEATHER", "ECONOMICS", "TECH", "FINANCE"]
@@ -41,6 +42,7 @@ class ConsensusEngine:
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "whalemirror/0.2"})
         self._lock = threading.Lock()
+        self._slug_cache: dict[str, str | None] = {}
 
     # ── HTTP ──────────────────────────────────────────────────────────────
     def _get(self, path: str, **params):
@@ -233,4 +235,36 @@ class ConsensusEngine:
                 "score": round(score, 2),
             })
         signals.sort(key=lambda s: s["score"], reverse=True)
+        self._attach_urls(signals)
         return signals
+
+    # ── Market links ─────────────────────────────────────────────────────
+    def _attach_urls(self, signals: list[dict]):
+        """Resolve polymarket.com URLs via Gamma slugs (cached per market)."""
+        for s in signals:
+            cid = s["condition_id"]
+            if cid not in self._slug_cache:
+                self._slug_cache[cid] = self._lookup_url(cid)
+                time.sleep(0.05)
+            if self._slug_cache[cid]:
+                s["url"] = self._slug_cache[cid]
+
+    def _lookup_url(self, condition_id: str) -> str | None:
+        try:
+            r = self.session.get(f"{GAMMA_API}/markets",
+                                 params={"condition_ids": condition_id}, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+        except requests.RequestException:
+            return None
+        rows = data if isinstance(data, list) else (data or {}).get("data") or []
+        if not rows:
+            return None
+        m = rows[0]
+        events = m.get("events") or []
+        event_slug = events[0].get("slug") if events and isinstance(events[0], dict) else None
+        if event_slug:
+            return f"https://polymarket.com/event/{event_slug}"
+        if m.get("slug"):
+            return f"https://polymarket.com/market/{m['slug']}"
+        return None
