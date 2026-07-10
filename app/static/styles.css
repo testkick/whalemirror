@@ -266,3 +266,6 @@ footer {
 .tag-won { color: var(--kelp); border: 1px solid var(--kelp); }
 .tag-lost { color: var(--coral); border: 1px solid var(--coral); }
 .tag-open { color: var(--sonar); border: 1px solid var(--sonar); }
+
+.market-link { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--muted); }
+.market-link:hover { color: var(--sonar); border-bottom-color: var(--sonar); }

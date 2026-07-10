@@ -98,7 +98,9 @@ function renderSignals(data) {
   $("signals-empty").classList.toggle("hidden", data.signals.length > 0);
   list.innerHTML = data.signals.map((s) => `
     <div class="signal">
-      <div class="signal-title">${esc(s.title)}<span class="side">→ ${esc(s.outcome)}</span></div>
+      <div class="signal-title">${s.url
+          ? `<a class="market-link" href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>`
+          : esc(s.title)}<span class="side">→ ${esc(s.outcome)}</span></div>
       <div class="signal-actions">
         <span class="score" title="Consensus score">${s.score.toFixed(1)}</span>
         <button class="btn btn-mirror" data-mirror="${s.id}">Mirror</button>
@@ -171,8 +173,11 @@ const C = (v) => CSS.getPropertyValue(v).trim();
 const money = (n) => (n >= 0 ? "+$" : "-$") + Math.abs(n).toFixed(2);
 const pnlCls = (n) => (n >= 0 ? "pnl-pos" : "pnl-neg");
 
+function tabVisible(name) { return !$("tab-" + name).classList.contains("hidden"); }
+
 async function loadPerformance() {
   const data = await api("/api/performance");
+  const chartsVisible = tabVisible("performance");
   const d = data.summary.dry_run, l = data.summary.live;
   const total = d.total + l.total;
   const realized = d.realized + l.realized;
@@ -199,6 +204,7 @@ async function loadPerformance() {
     y: +(s.realized + (s.value - s.cost)).toFixed(2),
   }));
   const dry = mkSeries(data.snapshots.dry_run), live = mkSeries(data.snapshots.live);
+  if (chartsVisible) {
   const labels = (dry.length >= live.length ? dry : live).map((p) => p.x);
   if (pnlChart) pnlChart.destroy();
   pnlChart = new Chart($("pnl-chart"), {
@@ -225,6 +231,7 @@ async function loadPerformance() {
     },
     options: chartOpts(false),
   });
+  }
 
   // Ledger table
   $("positions-body").innerHTML = [...data.positions].map((p) => `
@@ -323,11 +330,34 @@ $("clear-creds").onclick = async () => {
 };
 
 /* ── Boot ──────────────────────────────────────────────────────────── */
+async function refreshHeader() {
+  // header-only stats (mode badge + spend) without touching settings form fields
+  try {
+    const data = await api("/api/settings");
+    settings = data.settings;
+    $("spent-today").textContent = "$" + data.spent_today.toFixed(0);
+    const badge = $("mode-badge");
+    badge.textContent = settings.dry_run ? "DRY RUN" : "LIVE";
+    badge.className = "badge " + (settings.dry_run ? "badge-dry" : "badge-live");
+  } catch (_) {}
+}
+
+let bgTick = 0;
+async function tick() {
+  await pollSignals();                     // always: signals + sweep status
+  bgTick += 1;
+  if (bgTick % 3 === 0) {                  // every ~30s: everything else
+    refreshHeader();
+    loadPerformance().catch(() => {});
+    if (tabVisible("activity")) loadActivity().catch(() => {});
+  }
+}
+
 async function boot() {
   showApp();
   await loadSettings().catch(() => {});
-  await pollSignals();
-  setInterval(pollSignals, 10000);
+  await tick();
+  setInterval(tick, 10000);
 }
 
 (async () => {
