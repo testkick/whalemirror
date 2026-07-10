@@ -52,6 +52,11 @@ def init():
             first_seen REAL NOT NULL,
             last_seen REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            created REAL NOT NULL,
+            expires REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS wallets (
             address TEXT PRIMARY KEY,
             name TEXT,
@@ -350,3 +355,65 @@ def qualified_wallets() -> list[dict]:
     with db() as conn:
         rows = conn.execute("SELECT * FROM wallets WHERE qualified=1").fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Sessions (persist across restarts; tokens stored hashed) ─────────────
+SESSION_TTL = 7 * 24 * 3600
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def add_session(token: str):
+    now = time.time()
+    with db() as conn:
+        conn.execute("DELETE FROM sessions WHERE expires < ?", (now,))
+        conn.execute("INSERT OR REPLACE INTO sessions (token_hash, created, expires) VALUES (?, ?, ?)",
+                     (_token_hash(token), now, now + SESSION_TTL))
+
+
+def session_valid(token: str) -> bool:
+    if not token:
+        return False
+    with db() as conn:
+        row = conn.execute("SELECT expires FROM sessions WHERE token_hash=?",
+                           (_token_hash(token),)).fetchone()
+    return bool(row and row["expires"] > time.time())
+
+
+def remove_session(token: str):
+    with db() as conn:
+        conn.execute("DELETE FROM sessions WHERE token_hash=?", (_token_hash(token),))
+
+
+# ── Retention janitor (run daily from the scheduler) ─────────────────────
+def housekeeping():
+    """Prune data nobody needs: signals unseen for 30 days, expired sessions,
+    unqualified wallet scores older than 14 days, and downsample snapshots
+    older than 7 days to hourly resolution. VACUUM reclaims the disk."""
+    now = time.time()
+    with db() as conn:
+        conn.execute("DELETE FROM signals WHERE last_seen < ?", (now - 30 * 86400,))
+        conn.execute("DELETE FROM sessions WHERE expires < ?", (now,))
+        conn.execute("DELETE FROM wallets WHERE qualified=0 AND last_scored < ?",
+                     (now - 14 * 86400,))
+        # keep one snapshot per mode per hour for anything older than 7 days
+        conn.execute("""
+            DELETE FROM pnl_snapshots WHERE ts < ? AND rowid NOT IN (
+                SELECT MIN(rowid) FROM pnl_snapshots WHERE ts < ?
+                GROUP BY mode, CAST(ts / 3600 AS INTEGER)
+            )
+        """, (now - 7 * 86400, now - 7 * 86400))
+    # VACUUM needs its own connection outside a transaction
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+
+
+def db_size_mb() -> float:
+    try:
+        return round(os.path.getsize(DB_PATH) / 1048576, 2)
+    except OSError:
+        return 0.0

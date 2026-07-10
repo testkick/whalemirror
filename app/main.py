@@ -27,14 +27,13 @@ app = FastAPI(title="WhaleMirror", docs_url=None, redoc_url=None)
 # Secure cookies by default (Railway/any HTTPS proxy). Set COOKIE_SECURE=false
 # only for plain-HTTP local dev or SSH-tunnel access.
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() != "false"
-_sessions: set[str] = set()
 _state = {"refreshing": False, "progress": "", "last_error": None, "auto_results": []}
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────
 def require_session(request: Request):
     token = request.cookies.get("wm_session", "")
-    if not token or token not in _sessions:
+    if not store.session_valid(token):
         raise HTTPException(status_code=401, detail="Not signed in")
 
 
@@ -50,15 +49,15 @@ def login(body: LoginBody, response: Response):
         time.sleep(1)  # slow brute force
         raise HTTPException(401, "Wrong password")
     token = secrets.token_urlsafe(32)
-    _sessions.add(token)
+    store.add_session(token)
     response.set_cookie("wm_session", token, httponly=True, samesite="strict",
-                        secure=COOKIE_SECURE, max_age=12 * 3600)
+                        secure=COOKIE_SECURE, max_age=store.SESSION_TTL)
     return {"ok": True}
 
 
 @app.post("/api/logout")
 def logout(request: Request, response: Response):
-    _sessions.discard(request.cookies.get("wm_session", ""))
+    store.remove_session(request.cookies.get("wm_session", ""))
     response.delete_cookie("wm_session")
     return {"ok": True}
 
@@ -180,6 +179,7 @@ def activity(request: Request):
 async def scheduler():
     await asyncio.sleep(5)
     last_track = 0.0
+    last_housekeeping = 0.0
     while True:
         settings = store.get_settings()
         interval = max(10, int(settings["refresh_minutes"])) * 60
@@ -193,6 +193,12 @@ async def scheduler():
                 _state["last_error"] = str(e)
             finally:
                 _state.update(refreshing=False, progress="")
+        if time.time() - last_housekeeping > 86400:
+            last_housekeeping = time.time()
+            try:
+                await asyncio.to_thread(store.housekeeping)
+            except Exception:  # noqa: BLE001
+                pass
         if time.time() - last_track > 300:
             last_track = time.time()
             try:
@@ -221,7 +227,8 @@ def performance(request: Request):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "signals": len(store.get_signals()), "refreshing": _state["refreshing"]}
+    return {"ok": True, "signals": len(store.get_signals()),
+            "refreshing": _state["refreshing"], "db_mb": store.db_size_mb()}
 
 
 # ── Static ────────────────────────────────────────────────────────────────
