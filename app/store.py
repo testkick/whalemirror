@@ -52,6 +52,11 @@ def init():
             first_seen REAL NOT NULL,
             last_seen REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS followed_whales (
+            address TEXT PRIMARY KEY,
+            name TEXT,
+            added REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS sessions (
             token_hash TEXT PRIMARY KEY,
             created REAL NOT NULL,
@@ -113,6 +118,7 @@ def init():
 # ── Settings ──────────────────────────────────────────────────────────────
 SETTINGS_DEFAULTS = {
     "auto_mirror": False,
+    "auto_mirror_followed": False,
     "dry_run": True,
     "per_trade_usd": 25.0,
     "daily_cap_usd": 100.0,
@@ -417,3 +423,21 @@ def db_size_mb() -> float:
         return round(os.path.getsize(DB_PATH) / 1048576, 2)
     except OSError:
         return 0.0
+
+
+# ── Followed whales ───────────────────────────────────────────────────────
+def followed_whales() -> dict[str, str]:
+    with db() as conn:
+        rows = conn.execute("SELECT address, name FROM followed_whales").fetchall()
+    return {r["address"]: r["name"] for r in rows}
+
+
+def follow_whale(address: str, name: str):
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO followed_whales (address, name, added) VALUES (?, ?, ?)",
+                     (address.lower(), name, time.time()))
+
+
+def unfollow_whale(address: str):
+    with db() as conn:
+        conn.execute("DELETE FROM followed_whales WHERE address=?", (address.lower(),))

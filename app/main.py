@@ -73,7 +73,7 @@ def _run_refresh():
     def progress(i, n, name):
         _state["progress"] = f"Scanning whale {i}/{n} ({name})"
 
-    signals = engine.run(progress=progress)
+    signals = engine.run(progress=progress, followed=store.followed_whales())
     store.upsert_signals(signals)
     _state["auto_results"] = mirror.auto_mirror_pass(signals)
     return signals
@@ -103,6 +103,8 @@ def signals(request: Request):
     require_session(request)
     return {
         "signals": store.get_signals(),
+        "mirrored_ids": sorted(store.mirrored_signal_ids()),
+        "followed": store.followed_whales(),
         "last_refresh": store.last_refresh(),
         "refreshing": _state["refreshing"],
         "progress": _state["progress"],
@@ -167,6 +169,25 @@ async def mirror_signal(signal_id: str, body: MirrorBody, request: Request):
         raise HTTPException(404, "Signal not found or stale — refresh first")
     result = await asyncio.to_thread(mirror.execute_mirror, signal, body.usd, True)
     return result
+
+
+class FollowBody(BaseModel):
+    address: str
+    name: str
+
+
+@app.post("/api/whales/follow")
+def follow(body: FollowBody, request: Request):
+    require_session(request)
+    store.follow_whale(body.address, body.name)
+    return {"followed": store.followed_whales()}
+
+
+@app.delete("/api/whales/follow/{address}")
+def unfollow(address: str, request: Request):
+    require_session(request)
+    store.unfollow_whale(address)
+    return {"followed": store.followed_whales()}
 
 
 @app.get("/api/activity")

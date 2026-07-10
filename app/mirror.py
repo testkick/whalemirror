@@ -127,6 +127,8 @@ def auto_mirror_pass(signals: list[dict]) -> list[dict]:
     for s in signals:
         if s["id"] in already:
             continue
+        if s.get("signal_type") == "followed" and not settings.get("auto_mirror_followed"):
+            continue
         if s["score"] < settings["min_score_to_mirror"]:
             continue
         results.append({"signal": s["title"], **execute_mirror(s)})

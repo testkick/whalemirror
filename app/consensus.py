@@ -174,14 +174,22 @@ class ConsensusEngine:
         return keep
 
     # ── Stage 3: consensus ───────────────────────────────────────────────
-    def run(self, progress=None) -> list[dict]:
+    def run(self, progress=None, followed: dict[str, str] | None = None) -> list[dict]:
         from . import discovery  # local import avoids a cycle
         cfg = self.config
+        followed = {a.lower(): n for a, n in (followed or {}).items()}
         whales = discovery.build_pool(self, progress=progress)
+        # Followed whales are always in the pool, leaderboard or not
+        for addr, name in followed.items():
+            whales.setdefault(addr, {
+                "address": addr, "name": name, "pnl": 0.0, "volume": 0.0,
+                "roi": 0.0, "weight": 0.3, "categories": [], "sources": ["followed"],
+            })
         max_weight = max((w["weight"] for w in whales.values()), default=1.0) or 1.0
 
         side_book = defaultdict(list)
         condition_totals = defaultdict(float)
+        by_whale: dict[str, list[dict]] = {}
         done = {"n": 0}
 
         def scan(item):
@@ -192,9 +200,10 @@ class ConsensusEngine:
                 done["n"] += 1
                 if progress:
                     progress(done["n"], len(whales), f"whale {w['name']}")
+                by_whale[addr] = positions
                 for p in positions:
                     key = (p["condition_id"], p["outcome_index"])
-                    side_book[key].append({**p, "whale": w["name"],
+                    side_book[key].append({**p, "whale": w["name"], "whale_addr": addr,
                                            "whale_weight": w["weight"] / max_weight})
                     condition_totals[p["condition_id"]] += p["value"]
 
@@ -218,8 +227,11 @@ class ConsensusEngine:
                      * (1 + sum(h["whale_weight"] for h in holdings) / len(holdings))
                      * math.log10(1 + side_value))
             sig_id = hashlib.sha1(f"{condition_id}:{outcome_index}".encode()).hexdigest()[:16]
+            whale_details = sorted({h["whale_addr"]: h["whale"] for h in holdings}.items())
             signals.append({
                 "id": sig_id,
+                "signal_type": "consensus",
+                "whale_details": [{"address": a, "name": n} for a, n in whale_details],
                 "title": holdings[0]["title"],
                 "outcome": holdings[0]["outcome"],
                 "condition_id": condition_id,
@@ -234,6 +246,35 @@ class ConsensusEngine:
                 "end_date": holdings[0]["end_date"],
                 "score": round(score, 2),
             })
+        # Solo signals: followed whales' conviction positions not already
+        # covered by a consensus signal on the same (market, outcome).
+        covered = {(s["condition_id"], s["outcome_index"]) for s in signals}
+        now = time.time()
+        for addr, name in followed.items():
+            w = whales.get(addr, {})
+            for p in by_whale.get(addr, []):
+                key = (p["condition_id"], p["outcome_index"])
+                if key in covered:
+                    continue
+                sig_id = hashlib.sha1(f"f:{addr}:{key[0]}:{key[1]}".encode()).hexdigest()[:16]
+                score = round(0.5 * (1 + w.get("weight", 0.3) / max_weight)
+                              * math.log10(1 + p["value"]), 2)
+                signals.append({
+                    "id": sig_id,
+                    "signal_type": "followed",
+                    "followed_by": name,
+                    "whale_details": [{"address": addr, "name": name}],
+                    "title": p["title"], "outcome": p["outcome"],
+                    "condition_id": p["condition_id"], "outcome_index": p["outcome_index"],
+                    "whale_count": 1, "whales": [name],
+                    "whale_dollars": round(p["value"]),
+                    "dominance": 1.0,
+                    "avg_whale_entry": round(p["avg_price"], 3),
+                    "current_price": round(p["cur_price"], 3),
+                    "entry_drift": round(p["cur_price"] - p["avg_price"], 3),
+                    "end_date": p["end_date"], "score": score,
+                })
+
         signals.sort(key=lambda s: s["score"], reverse=True)
         self._attach_urls(signals)
         return signals
@@ -246,10 +287,13 @@ class ConsensusEngine:
             if cid not in self._slug_cache:
                 self._slug_cache[cid] = self._lookup_url(cid)
                 time.sleep(0.05)
-            if self._slug_cache[cid]:
-                s["url"] = self._slug_cache[cid]
+            meta = self._slug_cache[cid] or {}
+            if meta.get("url"):
+                s["url"] = meta["url"]
+            if meta.get("category"):
+                s["category"] = meta["category"]
 
-    def _lookup_url(self, condition_id: str) -> str | None:
+    def _lookup_url(self, condition_id: str) -> dict | None:
         try:
             r = self.session.get(f"{GAMMA_API}/markets",
                                  params={"condition_ids": condition_id}, timeout=15)
@@ -263,8 +307,9 @@ class ConsensusEngine:
         m = rows[0]
         events = m.get("events") or []
         event_slug = events[0].get("slug") if events and isinstance(events[0], dict) else None
-        if event_slug:
-            return f"https://polymarket.com/event/{event_slug}"
-        if m.get("slug"):
-            return f"https://polymarket.com/market/{m['slug']}"
-        return None
+        url = (f"https://polymarket.com/event/{event_slug}" if event_slug
+               else f"https://polymarket.com/market/{m['slug']}" if m.get("slug") else None)
+        category = m.get("category") or (m.get("tags") or [None])[0]
+        if isinstance(category, dict):
+            category = category.get("label") or category.get("name")
+        return {"url": url, "category": category} if (url or category) else None
