@@ -51,6 +51,22 @@
   <main>
     <!-- SIGNALS -->
     <section id="tab-signals" class="tab-panel">
+      <div class="filter-bar">
+        <input id="f-search" type="search" placeholder="Filter markets…">
+        <select id="f-sort">
+          <option value="score">Sort: Score</option>
+          <option value="first_seen">Sort: Recently added</option>
+          <option value="end_date">Sort: End date</option>
+          <option value="dominance">Sort: Dominance</option>
+          <option value="whale_dollars">Sort: Whale $</option>
+          <option value="whale_count">Sort: Whale count</option>
+          <option value="entry_drift">Sort: Best entry (drift)</option>
+        </select>
+        <button class="chip" id="f-new" title="First seen in the last 24h">New</button>
+        <button class="chip" id="f-unmirrored" title="Hide signals you already mirrored">Unmirrored</button>
+        <button class="chip" id="f-followed" title="Only signals involving followed whales">Followed</button>
+        <span id="f-count" class="filter-count"></span>
+      </div>
       <div id="signals-empty" class="empty hidden">
         No consensus signals yet. Run a sweep to scan the leaderboard whales.
       </div>
@@ -106,6 +122,12 @@
             <label class="switch-label">
               <input type="checkbox" id="s-auto-mirror"> Auto-mirror new signals
               <span class="hint">Each sweep mirrors new signals above the score floor, once each.</span>
+            </label>
+          </div>
+          <div class="field-row">
+            <label class="switch-label">
+              <input type="checkbox" id="s-auto-followed"> Auto-mirror followed-whale solo signals
+              <span class="hint">Off by default — one wallet's conviction is a weaker prior than consensus.</span>
             </label>
           </div>
           <div class="field-pair">
