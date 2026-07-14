@@ -11,16 +11,30 @@ Every execution path passes through the same guardrails:
   - de-dup: a signal is only auto-mirrored once
 """
 
+from datetime import datetime, timezone
+
 import requests
 
 from . import store
+
+
+def _days_to_end(end_date) -> float | None:
+    if not end_date:
+        return None
+    try:
+        d = datetime.fromisoformat(str(end_date).replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return (d - datetime.now(timezone.utc)).total_seconds() / 86400
+    except ValueError:
+        return None
 
 CLOB_API = "https://clob.polymarket.com"
 
 try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import MarketOrderArgs, OrderType
-    from py_clob_client.order_builder.constants import BUY
+    from py_clob_client.order_builder.constants import BUY, SELL
     CLOB_AVAILABLE = True
 except ImportError:  # app still runs (dry-run only) without the client installed
     CLOB_AVAILABLE = False
@@ -78,6 +92,20 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
     # Guardrails ----------------------------------------------------------
     if usd <= 0 or usd > settings["per_trade_usd"] * 4:
         return fail("skipped", f"size {usd} outside sane bounds")
+    price_now = signal["current_price"]
+    lo, hi = settings["min_entry_price"], settings["max_entry_price"]
+    if not (lo <= price_now <= hi):
+        return fail("skipped", f"entry band: price {price_now:.3f} outside [{lo:.2f}, {hi:.2f}]", price_now)
+    max_days = settings.get("max_days_to_resolution") or 0
+    if max_days:
+        days = _days_to_end(signal.get("end_date"))
+        if days is not None and days > max_days:
+            return fail("skipped", f"time horizon: resolves in {days:.0f}d > {max_days:.0f}d cap")
+    conflict = store.open_position_conflict(
+        signal["condition_id"], signal["outcome_index"], store.event_key_for(signal))
+    if conflict:
+        return fail("skipped",
+                    f"already holding opposing side of this event: '{conflict['title']}' → {conflict['outcome']}")
     if mode == "live":
         spent = store.spent_today_usd()
         if spent + usd > settings["daily_cap_usd"]:
@@ -133,3 +161,43 @@ def auto_mirror_pass(signals: list[dict]) -> list[dict]:
             continue
         results.append({"signal": s["title"], **execute_mirror(s)})
     return results
+
+
+def execute_sell(pos: dict, reason: str = "manual") -> dict:
+    """Exit a tracked position. Executes in the mode the position was OPENED in:
+    dry-run positions always sell simulated, live positions always sell real."""
+    mode = pos["mode"]
+    pseudo_signal = {"id": pos["signal_id"], "title": pos["title"], "outcome": pos["outcome"]}
+
+    live_price, _ = None, None
+    token_id, live_price = resolve_token_id(pos["condition_id"], pos["outcome_index"])
+    price = live_price if live_price is not None else (pos.get("last_price") or pos["entry_price"])
+    proceeds = pos["shares"] * price
+    pnl = round(proceeds - pos["usd"], 2)
+
+    if mode == "dry_run":
+        detail = (f"DRY RUN SELL ({reason}): {pos['shares']:.1f} sh '{pos['outcome']}' "
+                  f"at ~{price:.3f} → ${proceeds:.2f} ({'+' if pnl >= 0 else ''}{pnl:.2f})")
+        store.log_mirror(pseudo_signal, proceeds, price, mode, "ok", detail, side="SELL")
+        store.mark_position(pos["id"], price, pnl, status="sold", closed=True, reason=reason)
+        return {"status": "ok", "detail": detail, "mode": mode}
+
+    if not token_id:
+        return {"status": "error", "detail": "could not resolve token for sell", "mode": mode}
+    try:
+        client = _get_client()
+        order = client.create_market_order(MarketOrderArgs(
+            token_id=token_id,
+            amount=pos["shares"],   # shares for a market SELL
+            side=SELL,
+        ))
+        resp = client.post_order(order, OrderType.FOK)
+        detail = (f"LIVE SELL ({reason}): {pos['shares']:.1f} sh '{pos['outcome']}' "
+                  f"at ~{price:.3f} → {resp}")
+        store.log_mirror(pseudo_signal, proceeds, price, mode, "ok", str(detail), side="SELL")
+        store.mark_position(pos["id"], price, pnl, status="sold", closed=True, reason=reason)
+        return {"status": "ok", "detail": detail, "mode": mode}
+    except Exception as e:  # noqa: BLE001
+        detail = f"sell failed ({reason}): {e}"
+        store.log_mirror(pseudo_signal, proceeds, price, mode, "error", detail, side="SELL")
+        return {"status": "error", "detail": detail, "mode": mode}

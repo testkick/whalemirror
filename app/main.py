@@ -76,6 +76,7 @@ def _run_refresh():
     signals = engine.run(progress=progress, followed=store.followed_whales())
     store.upsert_signals(signals)
     _state["auto_results"] = mirror.auto_mirror_pass(signals)
+    tracker.whale_exit_check(signals)
     return signals
 
 
@@ -190,6 +191,34 @@ def unfollow(address: str, request: Request):
     return {"followed": store.followed_whales()}
 
 
+@app.post("/api/positions/{pos_id}/sell")
+async def sell_position(pos_id: int, request: Request):
+    require_session(request)
+    pos = store.get_position(pos_id)
+    if not pos or pos["status"] != "open":
+        raise HTTPException(404, "Open position not found")
+    return await asyncio.to_thread(mirror.execute_sell, pos, "manual")
+
+
+class LevelsBody(BaseModel):
+    floor: float | None = None
+    ceiling: float | None = None
+
+
+@app.post("/api/positions/{pos_id}/levels")
+def set_levels(pos_id: int, body: LevelsBody, request: Request):
+    require_session(request)
+    pos = store.get_position(pos_id)
+    if not pos or pos["status"] != "open":
+        raise HTTPException(404, "Open position not found")
+    def valid(v):
+        return v is None or (0.01 <= v <= 0.99)
+    if not (valid(body.floor) and valid(body.ceiling)):
+        raise HTTPException(400, "Levels must be between 0.01 and 0.99")
+    store.set_levels(pos_id, body.floor, body.ceiling)
+    return {"ok": True, "floor": body.floor, "ceiling": body.ceiling}
+
+
 @app.get("/api/activity")
 def activity(request: Request):
     require_session(request)
@@ -243,7 +272,15 @@ def performance(request: Request):
         "positions": store.all_positions(),
         "snapshots": {"dry_run": store.snapshots("dry_run"),
                       "live": store.snapshots("live")},
+        "categories": store.category_breakdown(),
     }
+
+
+@app.get("/api/whales/leaderboard")
+def whale_leaderboard(request: Request):
+    require_session(request)
+    return {"whales": store.whale_leaderboard(),
+            "followed": store.followed_whales()}
 
 
 @app.get("/healthz")

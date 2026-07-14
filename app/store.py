@@ -39,6 +39,29 @@ def db():
         conn.close()
 
 
+def _migrate(conn):
+    """Additive column migrations for existing databases."""
+    for stmt in (
+        "ALTER TABLE mirrors ADD COLUMN side TEXT DEFAULT 'BUY'",
+        "ALTER TABLE positions ADD COLUMN floor REAL",
+        "ALTER TABLE positions ADD COLUMN ceiling REAL",
+        "ALTER TABLE positions ADD COLUMN missing_sweeps INTEGER DEFAULT 0",
+        "ALTER TABLE positions ADD COLUMN exit_reason TEXT",
+        "ALTER TABLE positions ADD COLUMN category TEXT",
+        "ALTER TABLE positions ADD COLUMN event_key TEXT",
+        """CREATE TABLE IF NOT EXISTS position_whales (
+            position_id INTEGER NOT NULL,
+            address TEXT NOT NULL,
+            name TEXT,
+            PRIMARY KEY (position_id, address)
+        )""",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+
 def init():
     with db() as conn:
         conn.executescript("""
@@ -113,6 +136,7 @@ def init():
             detail TEXT
         );
         """)
+        _migrate(conn)
 
 
 # ── Settings ──────────────────────────────────────────────────────────────
@@ -123,6 +147,14 @@ SETTINGS_DEFAULTS = {
     "per_trade_usd": 25.0,
     "daily_cap_usd": 100.0,
     "max_slippage": 0.03,          # skip if price moved > 3¢ past the signal
+    "exit_with_whales": True,      # sell when the signal's consensus unwinds
+    "default_floor_offset": 0.0,   # auto stop: entry − X (0 = off)
+    "default_ceiling_offset": 0.0, # auto take-profit: entry + X (0 = off)
+    "stop_loss_pct": 0.0,          # close if down N% from entry (0 = off)
+    "min_entry_price": 0.0,        # only mirror inside [min, max] price band
+    "max_entry_price": 1.0,
+    "max_days_to_resolution": 0,   # skip signals ending beyond N days (0 = off)
+    "max_hold_days": 0,            # auto-close positions held longer (0 = off)
     "min_score_to_mirror": 8.0,
     "refresh_minutes": 15,
     # engine knobs surfaced in the UI
@@ -216,13 +248,14 @@ def last_refresh() -> float | None:
 
 
 # ── Mirror log ────────────────────────────────────────────────────────────
-def log_mirror(signal: dict, usd: float, price: float, mode: str, status: str, detail: str):
+def log_mirror(signal: dict, usd: float, price: float, mode: str, status: str,
+               detail: str, side: str = "BUY"):
     with db() as conn:
         conn.execute("""
-            INSERT INTO mirrors (ts, signal_id, title, outcome, usd, price, mode, status, detail)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO mirrors (ts, signal_id, title, outcome, usd, price, mode, status, detail, side)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (time.time(), signal["id"], signal["title"], signal["outcome"],
-              usd, price, mode, status, detail[:500]))
+              usd, price, mode, status, detail[:500], side))
 
 
 def mirror_history(limit: int = 100) -> list[dict]:
@@ -244,21 +277,40 @@ def spent_today_usd() -> float:
     with db() as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(usd), 0) AS s FROM mirrors "
-            "WHERE ts >= ? AND status='ok' AND mode='live'", (midnight,)).fetchone()
+            "WHERE ts >= ? AND status='ok' AND mode='live' AND side='BUY'",
+            (midnight,)).fetchone()
     return float(row["s"])
 
 
 # ── Position tracking ─────────────────────────────────────────────────────
+def event_key_for(signal: dict) -> str:
+    """Group key for 'same underlying event': the Polymarket event slug when
+    known (both sides of one game share it), else the condition id."""
+    url = signal.get("url") or ""
+    if "/event/" in url:
+        return "ev:" + url.split("/event/")[1].split("?")[0]
+    return "cond:" + (signal.get("condition_id") or "")
+
 def add_position(signal: dict, usd: float, price: float, token_id: str, mode: str):
     shares = usd / price if price > 0 else 0.0
+    s = get_settings()
+    fo, co = s.get("default_floor_offset", 0), s.get("default_ceiling_offset", 0)
+    floor = round(max(price - fo, 0.01), 3) if fo > 0 else None
+    ceiling = round(min(price + co, 0.99), 3) if co > 0 else None
     with db() as conn:
-        conn.execute("""
+        cur = conn.execute("""
             INSERT INTO positions (ts, signal_id, title, outcome, condition_id,
-                outcome_index, token_id, mode, usd, entry_price, shares, last_price, pnl)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                outcome_index, token_id, mode, usd, entry_price, shares, last_price,
+                pnl, floor, ceiling, category, event_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
         """, (time.time(), signal["id"], signal["title"], signal["outcome"],
               signal["condition_id"], signal["outcome_index"], token_id, mode,
-              usd, price, shares, price))
+              usd, price, shares, price, floor, ceiling,
+              signal.get("category"), event_key_for(signal)))
+        pid = cur.lastrowid
+        for w in signal.get("whale_details") or []:
+            conn.execute("INSERT OR IGNORE INTO position_whales (position_id, address, name) VALUES (?, ?, ?)",
+                         (pid, w["address"], w["name"]))
 
 
 def open_positions() -> list[dict]:
@@ -275,14 +327,39 @@ def all_positions(limit: int = 200) -> list[dict]:
 
 
 def mark_position(pos_id: int, last_price: float, pnl: float,
-                  status: str = "open", closed: bool = False):
+                  status: str = "open", closed: bool = False, reason: str | None = None):
     with db() as conn:
         if closed:
-            conn.execute("UPDATE positions SET last_price=?, pnl=?, status=?, closed_ts=? WHERE id=?",
-                         (last_price, pnl, status, time.time(), pos_id))
+            conn.execute("UPDATE positions SET last_price=?, pnl=?, status=?, closed_ts=?, exit_reason=? WHERE id=?",
+                         (last_price, pnl, status, time.time(), reason, pos_id))
         else:
             conn.execute("UPDATE positions SET last_price=?, pnl=? WHERE id=?",
                          (last_price, pnl, pos_id))
+
+
+def get_position(pos_id: int) -> dict | None:
+    with db() as conn:
+        row = conn.execute("SELECT * FROM positions WHERE id=?", (pos_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def set_levels(pos_id: int, floor: float | None, ceiling: float | None):
+    with db() as conn:
+        conn.execute("UPDATE positions SET floor=?, ceiling=? WHERE id=?",
+                     (floor, ceiling, pos_id))
+
+
+def bump_missing_sweeps(present_signal_ids: set[str]) -> list[dict]:
+    """After a sweep: open positions whose signal vanished get missing_sweeps+1,
+    present ones reset to 0. Returns open positions with their new counts."""
+    with db() as conn:
+        rows = conn.execute("SELECT id, signal_id, missing_sweeps FROM positions WHERE status='open'").fetchall()
+        out = []
+        for r in rows:
+            n = 0 if r["signal_id"] in present_signal_ids else (r["missing_sweeps"] or 0) + 1
+            conn.execute("UPDATE positions SET missing_sweeps=? WHERE id=?", (n, r["id"]))
+            out.append({"id": r["id"], "missing_sweeps": n})
+    return out
 
 
 def add_snapshot(mode: str, cost: float, value: float, realized: float):
@@ -312,17 +389,39 @@ def performance_summary() -> dict:
                 "FROM positions WHERE status='open' AND mode=?", (mode,)).fetchone()
             closed = conn.execute(
                 "SELECT COALESCE(SUM(pnl),0) r, "
-                "SUM(CASE WHEN status='won' THEN 1 ELSE 0 END) w, "
-                "SUM(CASE WHEN status='lost' THEN 1 ELSE 0 END) l "
+                "SUM(CASE WHEN status='won' OR (status='sold' AND pnl>0) THEN 1 ELSE 0 END) w, "
+                "SUM(CASE WHEN status='lost' OR (status='sold' AND pnl<=0) THEN 1 ELSE 0 END) l "
                 "FROM positions WHERE status!='open' AND mode=?", (mode,)).fetchone()
             wins, losses = closed["w"] or 0, closed["l"] or 0
+            closed_cost = conn.execute(
+                "SELECT COALESCE(SUM(usd),0) c FROM positions WHERE status!='open' AND mode=?",
+                (mode,)).fetchone()["c"]
+            day_ago = time.time() - 86400
+            d24 = conn.execute(
+                "SELECT COALESCE(SUM(pnl),0) r, "
+                "SUM(CASE WHEN status='won' OR (status='sold' AND pnl>0) THEN 1 ELSE 0 END) w, "
+                "SUM(CASE WHEN status='lost' OR (status='sold' AND pnl<=0) THEN 1 ELSE 0 END) l "
+                "FROM positions WHERE status!='open' AND mode=? AND closed_ts >= ?",
+                (mode, day_ago)).fetchone()
+            opened_24h = conn.execute(
+                "SELECT COUNT(*) n, COALESCE(SUM(usd),0) c FROM positions WHERE mode=? AND ts >= ?",
+                (mode, day_ago)).fetchone()
+            total = open_rows["u"] + closed["r"]
+            cost_basis = open_rows["c"] + closed_cost
             out[mode] = {
                 "open_count": open_rows["n"], "open_cost": open_rows["c"],
                 "unrealized": round(open_rows["u"], 2),
                 "realized": round(closed["r"], 2),
-                "total": round(open_rows["u"] + closed["r"], 2),
+                "total": round(total, 2),
                 "wins": wins, "losses": losses,
                 "win_rate": round(wins / (wins + losses), 3) if (wins + losses) else None,
+                "cost_basis": round(cost_basis, 2),
+                "roi_total": round(total / cost_basis, 4) if cost_basis else 0.0,
+                "roi_open": round(open_rows["u"] / open_rows["c"], 4) if open_rows["c"] else 0.0,
+                "roi_realized": round(closed["r"] / closed_cost, 4) if closed_cost else 0.0,
+                "realized_24h": round(d24["r"] or 0, 2),
+                "wins_24h": d24["w"] or 0, "losses_24h": d24["l"] or 0,
+                "opened_24h": opened_24h["n"], "deployed_24h": round(opened_24h["c"], 2),
             }
     return out
 
@@ -441,3 +540,64 @@ def follow_whale(address: str, name: str):
 def unfollow_whale(address: str):
     with db() as conn:
         conn.execute("DELETE FROM followed_whales WHERE address=?", (address.lower(),))
+
+
+def open_position_conflict(condition_id: str, outcome_index: int, event_key: str) -> dict | None:
+    """An open position that opposes this entry: another outcome of the same
+    market, or any position on the same underlying event with a different
+    market/outcome (the France -1.5 vs Spain -1.5 case)."""
+    with db() as conn:
+        row = conn.execute("""
+            SELECT * FROM positions WHERE status='open' AND (
+                (condition_id=? AND outcome_index!=?)
+                OR (event_key=? AND (condition_id!=? OR outcome_index!=?))
+            ) LIMIT 1
+        """, (condition_id, outcome_index, event_key, condition_id, outcome_index)).fetchone()
+    return dict(row) if row else None
+
+
+def category_breakdown() -> list[dict]:
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT COALESCE(category, 'Uncategorized') AS category,
+                   COUNT(*) AS positions,
+                   COALESCE(SUM(usd), 0) AS invested,
+                   COALESCE(SUM(pnl), 0) AS pnl,
+                   SUM(CASE WHEN status='won' OR (status='sold' AND pnl>0) THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN status='lost' OR (status='sold' AND pnl<=0) THEN 1 ELSE 0 END) AS losses
+            FROM positions GROUP BY COALESCE(category, 'Uncategorized')
+            ORDER BY pnl DESC
+        """).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["roi"] = round(d["pnl"] / d["invested"], 4) if d["invested"] else 0.0
+        out.append(d)
+    return out
+
+
+def whale_leaderboard() -> list[dict]:
+    """Our results attributed to each whale that co-signed a mirrored signal."""
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT pw.address, MAX(pw.name) AS name,
+                   COUNT(*) AS positions,
+                   COALESCE(SUM(p.usd), 0) AS invested,
+                   COALESCE(SUM(p.pnl), 0) AS pnl,
+                   SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<=0) THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN p.status='open' THEN 1 ELSE 0 END) AS open_count,
+                   MAX(p.ts) AS last_seen
+            FROM position_whales pw JOIN positions p ON p.id = pw.position_id
+            GROUP BY pw.address ORDER BY pnl DESC
+        """).fetchall()
+    followed = followed_whales()
+    out = []
+    for r in rows:
+        d = dict(r)
+        settled = d["wins"] + d["losses"]
+        d["win_rate"] = round(d["wins"] / settled, 3) if settled else None
+        d["roi"] = round(d["pnl"] / d["invested"], 4) if d["invested"] else 0.0
+        d["followed"] = d["address"] in followed
+        out.append(d)
+    return out

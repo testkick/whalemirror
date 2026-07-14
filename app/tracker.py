@@ -7,9 +7,11 @@ performance chart. Runs from the scheduler; dry-run and live positions are
 tracked identically but bucketed separately.
 """
 
+import time
+
 import requests
 
-from . import store
+from . import mirror, store
 
 CLOB_API = "https://clob.polymarket.com"
 _market_cache: dict[str, dict] = {}
@@ -72,6 +74,25 @@ def refresh_positions() -> dict:
             pnl = pos["shares"] * price - pos["usd"]
             store.mark_position(pos["id"], price, round(pnl, 2))
             updated += 1
+            # Auto-exits: ceiling → floor → stop-loss % → hold cap
+            settings = store.get_settings()
+            stop_pct = settings.get("stop_loss_pct") or 0
+            hold_days = settings.get("max_hold_days") or 0
+            loss_pct = ((price - pos["entry_price"]) / pos["entry_price"] * 100
+                        if pos["entry_price"] else 0)
+            if pos.get("ceiling") and price >= pos["ceiling"]:
+                mirror.execute_sell({**pos, "last_price": price}, reason="ceiling")
+                closed += 1
+            elif pos.get("floor") and price <= pos["floor"]:
+                mirror.execute_sell({**pos, "last_price": price}, reason="floor")
+                closed += 1
+            elif stop_pct > 0 and loss_pct <= -stop_pct:
+                mirror.execute_sell({**pos, "last_price": price},
+                                    reason=f"stop-loss {loss_pct:.0f}%")
+                closed += 1
+            elif hold_days > 0 and time.time() - pos["ts"] > hold_days * 86400:
+                mirror.execute_sell({**pos, "last_price": price}, reason="hold cap")
+                closed += 1
 
     # Snapshot per mode (open book value + cumulative realized)
     summary = store.performance_summary()
@@ -81,3 +102,19 @@ def refresh_positions() -> dict:
                                s["open_cost"] + s["unrealized"], s["realized"])
 
     return {"updated": updated, "closed": closed, "errors": errors}
+
+
+def whale_exit_check(fresh_signals: list[dict], required_misses: int = 2) -> list[dict]:
+    """Called after each sweep. If a position's signal has been absent from
+    `required_misses` consecutive sweeps, the consensus behind it unwound —
+    exit with the whales (when the setting is on)."""
+    if not store.get_settings().get("exit_with_whales"):
+        return []
+    present = {s["id"] for s in fresh_signals}
+    results = []
+    for rec in store.bump_missing_sweeps(present):
+        if rec["missing_sweeps"] >= required_misses:
+            pos = store.get_position(rec["id"])
+            if pos and pos["status"] == "open":
+                results.append(mirror.execute_sell(pos, reason="whale exit"))
+    return results

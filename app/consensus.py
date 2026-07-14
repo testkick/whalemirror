@@ -213,6 +213,9 @@ class ConsensusEngine:
                 f.result()  # propagate exceptions
 
         signals = []
+        by_condition = defaultdict(dict)
+        for (cid, oi), hs in side_book.items():
+            by_condition[cid][oi] = hs
         for (condition_id, outcome_index), holdings in side_book.items():
             wallets = {h["whale"] for h in holdings}
             if len(wallets) < cfg["min_whales"]:
@@ -228,7 +231,16 @@ class ConsensusEngine:
                      * math.log10(1 + side_value))
             sig_id = hashlib.sha1(f"{condition_id}:{outcome_index}".encode()).hexdigest()[:16]
             whale_details = sorted({h["whale_addr"]: h["whale"] for h in holdings}.items())
+            opp = [h for oi, hs in by_condition[condition_id].items()
+                   if oi != outcome_index for h in hs]
+            opp_details = sorted({h["whale_addr"]: h["whale"] for h in opp}.items())
             signals.append({
+                "opposing": {
+                    "whale_count": len({h["whale_addr"] for h in opp}),
+                    "whale_dollars": round(sum(h["value"] for h in opp)),
+                    "outcome": opp[0]["outcome"] if opp else None,
+                    "whale_details": [{"address": a, "name": n} for a, n in opp_details],
+                },
                 "id": sig_id,
                 "signal_type": "consensus",
                 "whale_details": [{"address": a, "name": n} for a, n in whale_details],
