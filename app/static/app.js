@@ -41,6 +41,7 @@ document.querySelectorAll(".tab").forEach((t) => {
     $("tab-" + t.dataset.tab).classList.remove("hidden");
     if (t.dataset.tab === "activity") loadActivity();
     if (t.dataset.tab === "performance") loadPerformance();
+    if (t.dataset.tab === "whales") loadWhales();
     if (t.dataset.tab === "settings") loadSettings();
   };
 });
@@ -78,6 +79,11 @@ function gaugeHTML(s) {
       </div>
       ${whaleChips(s)}
     </div>`;
+}
+
+function endsIn(endDate) {
+  const d = Math.ceil((new Date(endDate) - Date.now()) / 86400000);
+  return isFinite(d) ? ` <span class="held">(in ${d}d)</span>` : "";
 }
 
 let lastData = null;
@@ -162,8 +168,11 @@ function renderSignals(data) {
         <span><b>$${s.whale_dollars.toLocaleString()}</b> behind it</span>
         <span><b>${(s.dominance * 100).toFixed(0)}%</b> dominance</span>
         ${s.category ? `<span>${esc(s.category)}</span>` : ""}
-        ${s.end_date ? `<span>ends <b>${esc(String(s.end_date).slice(0, 10))}</b></span>` : ""}
+        ${s.end_date ? `<span>ends <b>${esc(String(s.end_date).slice(0, 10))}</b>${endsIn(s.end_date)}</span>` : ""}
       </div>
+      ${s.opposing && s.opposing.whale_count ? `
+      <div class="opposing">vs ${esc(s.opposing.outcome || "other side")}: <b>${s.opposing.whale_count}</b> whale${s.opposing.whale_count > 1 ? "s" : ""} \u00B7 <b>$${s.opposing.whale_dollars.toLocaleString()}</b>
+        <span title="${esc((s.opposing.whale_details || []).map((w) => w.name).join(", "))}">(hover for names)</span></div>` : ""}
       ${gaugeHTML(s)}
     </div>`).join("");
 
@@ -263,6 +272,15 @@ async function loadPerformance() {
   set("p-total", total);
   set("p-realized", realized);
   set("p-unrealized", unreal);
+  const costBasis = d.cost_basis + l.cost_basis;
+  const roiEl = $("p-roi");
+  roiEl.textContent = costBasis ? ((total / costBasis) * 100).toFixed(1) + "%" : "\u2014";
+  roiEl.className = pnlCls(total);
+  $("p-inplay").textContent = "$" + (d.open_cost + l.open_cost).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  set("p-24h-real", d.realized_24h + l.realized_24h);
+  $("p-24h-wl").textContent = `${d.wins_24h + l.wins_24h} / ${d.losses_24h + l.losses_24h}`;
+  $("p-24h-opened").textContent = d.opened_24h + l.opened_24h;
+  $("p-24h-deployed").textContent = "$" + (d.deployed_24h + l.deployed_24h).toLocaleString(undefined, { maximumFractionDigits: 0 });
   $("p-winrate").textContent = wins + losses ? ((wins / (wins + losses)) * 100).toFixed(0) + "%" : "—";
   const openN = d.open_count + l.open_count;
   $("p-counts").textContent = `${openN} / ${wins + losses}`;
@@ -270,7 +288,8 @@ async function loadPerformance() {
   $("performance-empty").classList.toggle("hidden", data.positions.length > 0);
 
   // Cumulative P&L line (dry vs live), from snapshots
-  const mkSeries = (snaps) => snaps.map((s) => ({
+  const cutoff = chartRange === "24h" ? Date.now() / 1000 - 86400 : 0;
+  const mkSeries = (snaps) => snaps.filter((s) => s.ts >= cutoff).map((s) => ({
     x: new Date(s.ts * 1000).toLocaleString(),
     y: +(s.realized + (s.value - s.cost)).toFixed(2),
   }));
@@ -304,19 +323,79 @@ async function loadPerformance() {
   });
   }
 
-  // Ledger table
-  $("positions-body").innerHTML = [...data.positions].map((p) => `
+  // Category breakdown
+  $("category-body").innerHTML = (data.categories || []).map((c) => `
     <tr>
-      <td>${new Date(p.ts * 1000).toLocaleDateString()}</td>
+      <td>${esc(c.category)}</td>
+      <td class="num">${c.positions}</td>
+      <td class="num">$${c.invested.toFixed(0)}</td>
+      <td class="num ${pnlCls(c.pnl)}">${money(c.pnl)}</td>
+      <td class="num ${pnlCls(c.roi)}">${(c.roi * 100).toFixed(1)}%</td>
+      <td class="num">${c.wins} / ${c.losses}</td>
+    </tr>`).join("");
+
+  // Ledger table
+  const pf = positionFilters;
+  const filtered = data.positions.filter((p) => {
+    if (pf.open && p.status !== "open") return false;
+    if (pf.settled && p.status === "open") return false;
+    if (pf.wins && !(p.status === "won" || (p.status === "sold" && p.pnl > 0))) return false;
+    if (pf.losses && !(p.status === "lost" || (p.status === "sold" && p.pnl <= 0))) return false;
+    return true;
+  });
+  $("pf-count").textContent = filtered.length === data.positions.length
+    ? `${filtered.length} positions` : `${filtered.length} of ${data.positions.length}`;
+  $("positions-body").innerHTML = filtered.map((p) => {
+    const open = p.status === "open";
+    const lvl = (field, val) => open
+      ? `<input class="level-input" type="number" min="0.01" max="0.99" step="0.01"
+           data-level="${field}" data-pos="${p.id}" value="${val ?? ""}" placeholder="—">`
+      : (val != null ? val.toFixed(2) : "—");
+    return `
+    <tr>
+      <td>${new Date(p.ts * 1000).toLocaleDateString()}${open ? `<span class="held">held ${Math.floor((Date.now() / 1000 - p.ts) / 86400)}d</span>` : ""}</td>
       <td>${esc(p.title || "")}</td>
       <td>${esc(p.outcome || "")}</td>
       <td class="num">$${p.usd.toFixed(2)}</td>
       <td class="num">${p.entry_price.toFixed(3)}</td>
       <td class="num">${(p.last_price ?? p.entry_price).toFixed(3)}</td>
       <td class="num ${pnlCls(p.pnl)}">${money(p.pnl)}</td>
+      <td class="num">${lvl("floor", p.floor)}</td>
+      <td class="num">${lvl("ceiling", p.ceiling)}</td>
       <td><span class="tag ${p.mode === "live" ? "tag-live" : "tag-dry"}">${p.mode}</span></td>
-      <td><span class="tag tag-${p.status}">${p.status}</span></td>
-    </tr>`).join("");
+      <td><span class="tag tag-${p.status}" title="${esc(p.exit_reason || "")}">${p.status}</span>${p.exit_reason ? `<span class="exit-reason">${esc(p.exit_reason)}</span>` : ""}</td>
+      <td>${open ? `<button class="btn btn-sell" data-sell="${p.id}">Sell</button>` : ""}</td>
+    </tr>`;
+  }).join("");
+
+  document.querySelectorAll("[data-sell]").forEach((btn) => {
+    btn.onclick = async () => {
+      const p = data.positions.find((x) => x.id == btn.dataset.sell);
+      const live = p.mode === "live";
+      if (!confirm(`${live ? "LIVE sell" : "Simulated sell"}: close "${p.title}" at market? Current P&L ${money(p.pnl)}.`)) return;
+      btn.disabled = true;
+      try {
+        const r = await api(`/api/positions/${p.id}/sell`, { method: "POST" });
+        flash(r.status === "ok" ? "ok" : "err", r.detail);
+        loadPerformance();
+      } catch (e) { flash("err", e.message); btn.disabled = false; }
+    };
+  });
+
+  document.querySelectorAll(".level-input").forEach((inp) => {
+    inp.onchange = async () => {
+      const row = data.positions.find((x) => x.id == inp.dataset.pos);
+      const floor = row && document.querySelector(`[data-level="floor"][data-pos="${inp.dataset.pos}"]`).value;
+      const ceiling = row && document.querySelector(`[data-level="ceiling"][data-pos="${inp.dataset.pos}"]`).value;
+      try {
+        await api(`/api/positions/${inp.dataset.pos}/levels`, {
+          method: "POST",
+          body: JSON.stringify({ floor: floor ? +floor : null, ceiling: ceiling ? +ceiling : null }),
+        });
+        flash("ok", "Exit levels saved.");
+      } catch (e) { flash("err", e.message); }
+    };
+  });
 }
 
 function chartOpts(legend = true) {
@@ -328,6 +407,68 @@ function chartOpts(legend = true) {
   };
 }
 
+/* ── Performance controls ──────────────────────────────────────────── */
+let chartRange = "all";
+const positionFilters = { open: false, settled: false, wins: false, losses: false };
+$("r-all").onclick = () => { chartRange = "all"; $("r-all").classList.add("on"); $("r-24h").classList.remove("on"); loadPerformance(); };
+$("r-24h").onclick = () => { chartRange = "24h"; $("r-24h").classList.add("on"); $("r-all").classList.remove("on"); loadPerformance(); };
+document.querySelectorAll("[data-pf]").forEach((chip) => {
+  chip.onclick = () => {
+    const key = chip.dataset.pf;
+    positionFilters[key] = !positionFilters[key];
+    if (key === "open" && positionFilters.open) { positionFilters.settled = false; document.querySelector('[data-pf="settled"]').classList.remove("on"); }
+    if (key === "settled" && positionFilters.settled) { positionFilters.open = false; document.querySelector('[data-pf="open"]').classList.remove("on"); }
+    chip.classList.toggle("on", positionFilters[key]);
+    loadPerformance();
+  };
+});
+
+/* ── Whales tab ────────────────────────────────────────────────────── */
+let whaleSort = { key: "pnl", dir: -1 };
+let whaleData = null;
+async function loadWhales() {
+  whaleData = await api("/api/whales/leaderboard");
+  renderWhales();
+}
+function renderWhales() {
+  const rows = [...(whaleData.whales || [])].sort((a, b) => {
+    const va = a[whaleSort.key], vb = b[whaleSort.key];
+    if (typeof va === "string") return whaleSort.dir * va.localeCompare(vb);
+    return whaleSort.dir * ((va ?? -Infinity) - (vb ?? -Infinity));
+  });
+  $("whales-empty").classList.toggle("hidden", rows.length > 0);
+  $("whales-body").innerHTML = rows.map((w) => `
+    <tr>
+      <td>${esc(w.name)}</td>
+      <td class="num">${w.positions}</td>
+      <td class="num">${w.wins} / ${w.losses}</td>
+      <td class="num">${w.win_rate != null ? (w.win_rate * 100).toFixed(0) + "%" : "\u2014"}</td>
+      <td class="num ${pnlCls(w.pnl)}">${money(w.pnl)}</td>
+      <td class="num">$${w.invested.toFixed(0)}</td>
+      <td class="num ${pnlCls(w.roi)}">${(w.roi * 100).toFixed(1)}%</td>
+      <td class="num">${w.open_count}</td>
+      <td>${new Date(w.last_seen * 1000).toLocaleDateString()}</td>
+      <td><button class="btn ${w.followed ? "" : "btn-mirror"}" data-wfollow="${esc(w.address)}" data-wname="${esc(w.name)}">${w.followed ? "Unfollow" : "Follow"}</button></td>
+    </tr>`).join("");
+  document.querySelectorAll("[data-wfollow]").forEach((btn) => {
+    btn.onclick = async () => {
+      const addr = btn.dataset.wfollow, name = btn.dataset.wname;
+      const isFollowed = whaleData.whales.find((w) => w.address === addr)?.followed;
+      if (isFollowed) await api(`/api/whales/follow/${addr}`, { method: "DELETE" });
+      else await api("/api/whales/follow", { method: "POST", body: JSON.stringify({ address: addr, name }) });
+      loadWhales();
+    };
+  });
+}
+document.querySelectorAll("#whales-table th[data-ws]").forEach((th) => {
+  th.onclick = () => {
+    const key = th.dataset.ws;
+    whaleSort.dir = whaleSort.key === key ? -whaleSort.dir : -1;
+    whaleSort.key = key;
+    if (whaleData) renderWhales();
+  };
+});
+
 /* ── Settings ──────────────────────────────────────────────────────── */
 async function loadSettings() {
   const data = await api("/api/settings");
@@ -335,6 +476,14 @@ async function loadSettings() {
   $("s-dry-run").checked = settings.dry_run;
   $("s-auto-mirror").checked = settings.auto_mirror;
   $("s-auto-followed").checked = settings.auto_mirror_followed;
+  $("s-exit-whales").checked = settings.exit_with_whales;
+  $("s-floor-off").value = Math.round(settings.default_floor_offset * 100);
+  $("s-ceiling-off").value = Math.round(settings.default_ceiling_offset * 100);
+  $("s-stop-pct").value = settings.stop_loss_pct;
+  $("s-max-hold").value = settings.max_hold_days;
+  $("s-min-entry").value = Math.round(settings.min_entry_price * 100);
+  $("s-max-entry").value = Math.round(settings.max_entry_price * 100);
+  $("s-max-days").value = settings.max_days_to_resolution;
   $("s-per-trade").value = settings.per_trade_usd;
   $("s-daily-cap").value = settings.daily_cap_usd;
   $("s-slippage").value = settings.max_slippage * 100;
@@ -360,6 +509,14 @@ $("save-settings").onclick = async () => {
       dry_run: $("s-dry-run").checked,
       auto_mirror: $("s-auto-mirror").checked,
       auto_mirror_followed: $("s-auto-followed").checked,
+      exit_with_whales: $("s-exit-whales").checked,
+      default_floor_offset: +$("s-floor-off").value / 100,
+      default_ceiling_offset: +$("s-ceiling-off").value / 100,
+      stop_loss_pct: +$("s-stop-pct").value,
+      max_hold_days: +$("s-max-hold").value,
+      min_entry_price: +$("s-min-entry").value / 100,
+      max_entry_price: +$("s-max-entry").value / 100,
+      max_days_to_resolution: +$("s-max-days").value,
       per_trade_usd: +$("s-per-trade").value,
       daily_cap_usd: +$("s-daily-cap").value,
       max_slippage: +$("s-slippage").value / 100,

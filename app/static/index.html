@@ -44,6 +44,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="signals">Signals</button>
     <button class="tab" data-tab="performance">Performance</button>
+    <button class="tab" data-tab="whales">Whales</button>
     <button class="tab" data-tab="activity">Activity</button>
     <button class="tab" data-tab="settings">Settings</button>
   </nav>
@@ -77,23 +78,65 @@
     <section id="tab-performance" class="tab-panel hidden">
       <div class="stat-cards">
         <div class="stat-card"><label>Total P&L</label><b id="p-total">—</b></div>
+        <div class="stat-card"><label>ROI</label><b id="p-roi">—</b></div>
+        <div class="stat-card"><label>Money in play</label><b id="p-inplay">—</b></div>
         <div class="stat-card"><label>Realized</label><b id="p-realized">—</b></div>
         <div class="stat-card"><label>Unrealized</label><b id="p-unrealized">—</b></div>
         <div class="stat-card"><label>Win rate</label><b id="p-winrate">—</b></div>
         <div class="stat-card"><label>Open / Closed</label><b id="p-counts">—</b></div>
       </div>
+      <div class="stat-cards">
+        <div class="stat-card"><label>24h realized</label><b id="p-24h-real">—</b></div>
+        <div class="stat-card"><label>24h W / L</label><b id="p-24h-wl">—</b></div>
+        <div class="stat-card"><label>24h opened</label><b id="p-24h-opened">—</b></div>
+        <div class="stat-card"><label>24h deployed</label><b id="p-24h-deployed">—</b></div>
+      </div>
       <div class="card chart-card">
         <h2>Portfolio P&L over time</h2>
+        <div class="range-toggle">
+          <button class="chip on" id="r-all">All</button>
+          <button class="chip" id="r-24h">24h</button>
+        </div>
         <canvas id="pnl-chart" height="90"></canvas>
+      </div>
+      <div class="card chart-card">
+        <h2>ROI by category</h2>
+        <table class="activity-table" id="category-table">
+          <thead><tr><th>Category</th><th class="num">Positions</th><th class="num">Invested</th><th class="num">P&L</th><th class="num">ROI</th><th class="num">W / L</th></tr></thead>
+          <tbody id="category-body"></tbody>
+        </table>
       </div>
       <div class="card chart-card">
         <h2>P&L by position</h2>
         <canvas id="pos-chart" height="90"></canvas>
       </div>
       <div id="performance-empty" class="empty hidden">No tracked positions yet — mirror a signal (dry run counts) and the tracker will start marking it to market.</div>
+      <div class="filter-bar">
+        <button class="chip" data-pf="open">Open</button>
+        <button class="chip" data-pf="settled">Settled</button>
+        <button class="chip" data-pf="wins">Wins</button>
+        <button class="chip" data-pf="losses">Losses</button>
+        <span id="pf-count" class="filter-count"></span>
+      </div>
       <table class="activity-table" id="positions-table">
-        <thead><tr><th>Opened</th><th>Market</th><th>Side</th><th class="num">Cost</th><th class="num">Entry</th><th class="num">Last</th><th class="num">P&L</th><th>Mode</th><th>Status</th></tr></thead>
+        <thead><tr><th>Opened</th><th>Market</th><th>Side</th><th class="num">Cost</th><th class="num">Entry</th><th class="num">Last</th><th class="num">P&L</th><th class="num">Floor</th><th class="num">Ceiling</th><th>Mode</th><th>Status</th><th></th></tr></thead>
         <tbody id="positions-body"></tbody>
+      </table>
+    </section>
+
+    <!-- WHALES -->
+    <section id="tab-whales" class="tab-panel hidden">
+      <p class="hint" style="margin-bottom:12px">Whales ranked by <b>our</b> results when they co-signed a mirrored signal. Attribution starts from positions opened after this deploy.</p>
+      <div id="whales-empty" class="empty hidden">No whale attribution yet — mirror some signals and this fills in as they settle.</div>
+      <table class="activity-table" id="whales-table">
+        <thead><tr>
+          <th data-ws="name">Whale</th><th class="num" data-ws="positions">Co-signed</th>
+          <th class="num" data-ws="wins">W / L</th><th class="num" data-ws="win_rate">Win %</th>
+          <th class="num" data-ws="pnl">Our P&L</th><th class="num" data-ws="invested">Invested</th>
+          <th class="num" data-ws="roi">ROI</th><th class="num" data-ws="open_count">Open</th>
+          <th data-ws="last_seen">Last</th><th></th>
+        </tr></thead>
+        <tbody id="whales-body"></tbody>
       </table>
     </section>
 
@@ -135,9 +178,31 @@
             <label>Daily cap (USD)<input type="number" id="s-daily-cap" min="1" step="1"></label>
           </div>
           <div class="field-pair">
-            <label>Max slippage (¢)<input type="number" id="s-slippage" min="0" max="20" step="0.5"></label>
+            <label>Max slippage (¢)<input type="number" id="s-slippage" min="0" max="25" step="0.5"></label>
             <label>Score floor for auto<input type="number" id="s-score-floor" min="0" step="0.5"></label>
           </div>
+          <div class="field-row">
+            <label class="switch-label">
+              <input type="checkbox" id="s-exit-whales"> Exit with the whales
+              <span class="hint">Sell a position when its signal disappears from 2 consecutive sweeps — the consensus behind it unwound.</span>
+            </label>
+          </div>
+          <div class="field-pair">
+            <label>Default stop: entry − (¢)<input type="number" id="s-floor-off" min="0" max="50" step="1"></label>
+            <label>Default take-profit: entry + (¢)<input type="number" id="s-ceiling-off" min="0" max="50" step="1"></label>
+          </div>
+          <div class="field-pair">
+            <label>Stop-loss (% from entry)<input type="number" id="s-stop-pct" min="0" max="95" step="5"></label>
+            <label>Max hold (days)<input type="number" id="s-max-hold" min="0" step="1"></label>
+          </div>
+          <div class="field-pair">
+            <label>Min entry price (¢)<input type="number" id="s-min-entry" min="0" max="99" step="1"></label>
+            <label>Max entry price (¢)<input type="number" id="s-max-entry" min="1" max="100" step="1"></label>
+          </div>
+          <div class="field-pair">
+            <label>Time horizon: max days to resolution<input type="number" id="s-max-days" min="0" step="1"></label>
+          </div>
+          <span class="hint">0 = off for stop-loss, hold cap, and time horizon. Entry band and horizon gate both auto and manual mirrors — skips are logged to Activity.</span>
         </div>
 
         <div class="card">

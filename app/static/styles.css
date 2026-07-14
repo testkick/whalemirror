@@ -293,3 +293,16 @@ footer {
 .whale-chip .star { margin-right: 4px; }
 .tag-followed { color: var(--amber); border: 1px solid var(--amber); }
 .tag-mirrored { color: var(--kelp); border: 1px solid var(--kelp); }
+
+.btn-sell { border-color: var(--coral); color: var(--coral); padding: 4px 10px; font-size: 12px; }
+.btn-sell:hover { background: var(--coral); color: #2A0E08; }
+.level-input { width: 62px; padding: 4px 6px; font-size: 12px; }
+.tag-sold { color: var(--sonar); border: 1px solid var(--sonar); }
+.exit-reason { font-family: var(--mono); font-size: 10px; color: var(--muted); display: block; margin-top: 2px; }
+
+.range-toggle { display: flex; gap: 6px; margin-bottom: 8px; }
+.opposing { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 4px; }
+.opposing b { color: var(--coral); font-weight: 500; }
+.held { font-family: var(--mono); font-size: 10px; color: var(--muted); display: block; }
+#whales-table th { cursor: pointer; }
+#whales-table th:hover { color: var(--sonar); }
