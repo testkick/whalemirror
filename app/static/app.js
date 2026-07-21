@@ -273,9 +273,18 @@ async function loadPerformance() {
   set("p-realized", realized);
   set("p-unrealized", unreal);
   const costBasis = d.cost_basis + l.cost_basis;
+  const peakCapital = d.peak_capital + l.peak_capital;
+  const roiCapEl = $("p-roi-capital");
+  roiCapEl.textContent = peakCapital ? ((total / peakCapital) * 100).toFixed(1) + "%" : "\u2014";
+  roiCapEl.className = pnlCls(total);
+  roiCapEl.title = "Return on peak capital actually at risk — the real ROI once winnings recycle";
   const roiEl = $("p-roi");
   roiEl.textContent = costBasis ? ((total / costBasis) * 100).toFixed(1) + "%" : "\u2014";
   roiEl.className = pnlCls(total);
+  const turnover = peakCapital ? (costBasis / peakCapital).toFixed(1) : "0";
+  roiEl.title = `Return on total bet volume ($${costBasis.toLocaleString()}). Turnover ${turnover}\u00D7 — capital recycled ${turnover} times.`;
+  $("p-capital").textContent = "$" + peakCapital.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  $("p-capital").title = `Peak simultaneous capital at risk. Total bets placed: $${costBasis.toLocaleString()} (${turnover}\u00D7 turnover)`;
   $("p-inplay").textContent = "$" + (d.open_cost + l.open_cost).toLocaleString(undefined, { maximumFractionDigits: 0 });
   set("p-24h-real", d.realized_24h + l.realized_24h);
   $("p-24h-wl").textContent = `${d.wins_24h + l.wins_24h} / ${d.losses_24h + l.losses_24h}`;
@@ -559,6 +568,51 @@ $("clear-creds").onclick = async () => {
   loadSettings();
 };
 
+/* ── UI state persistence ──────────────────────────────────────────── */
+let uiSaveTimer = null;
+function scheduleUISave() {
+  clearTimeout(uiSaveTimer);
+  uiSaveTimer = setTimeout(() => {
+    const state = {
+      tab: document.querySelector(".tab.active")?.dataset.tab || "signals",
+      filters: { ...filters },
+      positionFilters: { ...positionFilters },
+      chartRange,
+      whaleSort: { ...whaleSort },
+    };
+    api("/api/ui-state", { method: "POST", body: JSON.stringify(state) }).catch(() => {});
+  }, 1500);
+}
+
+function applyUIState(state) {
+  if (!state || !Object.keys(state).length) return;
+  if (state.filters) {
+    Object.assign(filters, state.filters);
+    $("f-search").value = filters.search || "";
+    $("f-sort").value = filters.sort || "score";
+    $("f-new").classList.toggle("on", !!filters.newOnly);
+    $("f-unmirrored").classList.toggle("on", !!filters.unmirrored);
+    $("f-followed").classList.toggle("on", !!filters.followedOnly);
+  }
+  if (state.positionFilters) {
+    Object.assign(positionFilters, state.positionFilters);
+    document.querySelectorAll("[data-pf]").forEach((chip) =>
+      chip.classList.toggle("on", !!positionFilters[chip.dataset.pf]));
+  }
+  if (state.chartRange) {
+    chartRange = state.chartRange;
+    $("r-all").classList.toggle("on", chartRange === "all");
+    $("r-24h").classList.toggle("on", chartRange === "24h");
+  }
+  if (state.whaleSort) Object.assign(whaleSort, state.whaleSort);
+  if (state.tab && state.tab !== "signals") activateTab(state.tab);
+}
+
+// Any interaction quietly syncs interface state (debounced, tiny payload)
+document.addEventListener("click", scheduleUISave);
+document.addEventListener("change", scheduleUISave);
+$("f-search").addEventListener("input", scheduleUISave);
+
 /* ── Boot ──────────────────────────────────────────────────────────── */
 async function refreshHeader() {
   // header-only stats (mode badge + spend) without touching settings form fields
@@ -585,6 +639,10 @@ async function tick() {
 
 async function boot() {
   showApp();
+  try {
+    const { state } = await api("/api/ui-state");
+    applyUIState(state);
+  } catch (_) {}
   await loadSettings().catch(() => {});
   await tick();
   setInterval(tick, 10000);
