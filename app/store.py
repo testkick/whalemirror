@@ -283,6 +283,58 @@ def spent_today_usd() -> float:
 
 
 # ── Position tracking ─────────────────────────────────────────────────────
+CATEGORY_KEYWORDS = [
+    ("Sports", ["nba", "nfl", "mlb", "nhl", "vs.", " vs ", "o/u", "spread:",
+                "dodgers", "yankees", "lakers", "celtics", "premier league",
+                "champions league", "world cup", "super bowl", "playoff",
+                "braves", "mets", "phillies", "padres", "brewers", "-1.5", "+1.5",
+                "moneyline", "to win the", "series", "match", "game "]),
+    ("Politics", ["president", "presidential", "election", "senate", "congress",
+                  "nomination", "primary", "governor", "democrat", "republican",
+                  "impeach", "cabinet", "supreme court", "vote", "poll", "ballot",
+                  "trump", "biden", "vance", "aoc", "shapiro", "newsom"]),
+    ("Geopolitics", ["ceasefire", "war", "invade", "sanction", "treaty", "nato",
+                     "iran", "ukraine", "russia", "china", "israel", "gaza",
+                     "hormuz", "strait", "military", "nuclear", "withdrawal",
+                     "negotiation", "diplomatic", "border"]),
+    ("Crypto", ["bitcoin", "btc", "ethereum", "eth", "solana", "crypto", "coin",
+                "token", "defi", "stablecoin", "etf approval"]),
+    ("Economics", ["fed", "rate hike", "rate cut", "inflation", "cpi", "gdp",
+                   "recession", "unemployment", "interest rate", "jobs report",
+                   "s&p", "nasdaq", "dow", "treasury", "tariff"]),
+    ("Tech", ["ai ", "openai", "gpt", "llm", "chip", "nvidia", "tesla", "spacex",
+              "launch", "iphone", "apple", "google", "microsoft", "model"]),
+    ("Culture", ["oscar", "grammy", "movie", "box office", "album", "spotify",
+                 "netflix", "celebrity", "award", "rotten tomatoes", "billboard"]),
+]
+
+
+def classify_category(title: str, given: str | None = None) -> str:
+    """Prefer an explicit category; else infer from title keywords."""
+    if given and given.strip() and given.strip().lower() != "uncategorized":
+        return given.strip()
+    t = (title or "").lower()
+    for label, kws in CATEGORY_KEYWORDS:
+        if any(k in t for k in kws):
+            return label
+    return "Uncategorized"
+
+
+def backfill_categories() -> int:
+    """One-time: classify existing positions that have no category."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, title, category FROM positions "
+            "WHERE category IS NULL OR category='' OR category='Uncategorized'").fetchall()
+        n = 0
+        for r in rows:
+            cat = classify_category(r["title"], None)
+            if cat != "Uncategorized":
+                conn.execute("UPDATE positions SET category=? WHERE id=?", (cat, r["id"]))
+                n += 1
+    return n
+
+
 def event_key_for(signal: dict) -> str:
     """Group key for 'same underlying event': the Polymarket event slug when
     known (both sides of one game share it), else the condition id."""
@@ -306,7 +358,8 @@ def add_position(signal: dict, usd: float, price: float, token_id: str, mode: st
         """, (time.time(), signal["id"], signal["title"], signal["outcome"],
               signal["condition_id"], signal["outcome_index"], token_id, mode,
               usd, price, shares, price, floor, ceiling,
-              signal.get("category"), event_key_for(signal)))
+              classify_category(signal.get("title"), signal.get("category")),
+              event_key_for(signal)))
         pid = cur.lastrowid
         for w in signal.get("whale_details") or []:
             conn.execute("INSERT OR IGNORE INTO position_whales (position_id, address, name) VALUES (?, ?, ?)",
@@ -380,6 +433,26 @@ def snapshots(mode: str | None = None, limit: int = 2000) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def peak_capital_deployed(mode: str) -> float:
+    """Max capital simultaneously at risk — the real denominator for ROI when
+    winnings recycle into new bets. Walk position opens (+usd) and closes
+    (−usd) in time order; track the running peak of concurrent exposure."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT ts, usd, closed_ts FROM positions WHERE mode=?", (mode,)).fetchall()
+    events = []
+    for r in rows:
+        events.append((r["ts"], r["usd"]))            # capital goes out
+        if r["closed_ts"]:
+            events.append((r["closed_ts"], -r["usd"])) # capital comes back
+    events.sort(key=lambda e: e[0])
+    running = peak = 0.0
+    for _, delta in events:
+        running += delta
+        peak = max(peak, running)
+    return round(peak, 2)
+
+
 def performance_summary() -> dict:
     out = {}
     with db() as conn:
@@ -408,7 +481,11 @@ def performance_summary() -> dict:
                 (mode, day_ago)).fetchone()
             total = open_rows["u"] + closed["r"]
             cost_basis = open_rows["c"] + closed_cost
+            peak_capital = peak_capital_deployed(mode)
             out[mode] = {
+                "peak_capital": peak_capital,
+                "roi_on_capital": round(total / peak_capital, 4) if peak_capital else 0.0,
+                "turnover": round(cost_basis / peak_capital, 2) if peak_capital else 0.0,
                 "open_count": open_rows["n"], "open_cost": open_rows["c"],
                 "unrealized": round(open_rows["u"], 2),
                 "realized": round(closed["r"], 2),
@@ -542,24 +619,119 @@ def unfollow_whale(address: str):
         conn.execute("DELETE FROM followed_whales WHERE address=?", (address.lower(),))
 
 
-def open_position_conflict(condition_id: str, outcome_index: int, event_key: str) -> dict | None:
-    """An open position that opposes this entry: another outcome of the same
-    market, or any position on the same underlying event with a different
-    market/outcome (the France -1.5 vs Spain -1.5 case)."""
+def _game_teams(title: str) -> tuple[str, str] | None:
+    """Extract the two teams from a game title like 'A vs. B' or 'A vs B: O/U 8.5'."""
+    import re
+    m = re.split(r"\s+vs\.?\s+", (title or ""), maxsplit=1)
+    if len(m) != 2:
+        return None
+    away = m[0].strip()
+    home = re.split(r"[:\-]", m[1])[0].strip()  # drop ': O/U 8.5' / '- spread'
+    if away and home:
+        return (away.lower(), home.lower())
+    return None
+
+
+def _is_game(title: str, outcome: str) -> bool:
+    """A sports game/match market (spread, moneyline, or total) — as opposed to
+    a standalone 'Will X happen?' question. Only these use event-slug linkage,
+    because Polymarket groups many INDEPENDENT question-markets (e.g. every 2028
+    candidate) under one election event slug, and those are not mutual hedges."""
+    t = (title or "").lower()
+    if _game_teams(title):
+        return True
+    if "spread:" in t or "o/u" in t or " vs." in t or " vs " in t:
+        return True
+    if (outcome or "").lower() in ("over", "under"):
+        return True
+    return False
+
+
+def _same_game(a: dict, b_title: str, b_outcome: str, b_event: str) -> bool:
+    """Same underlying game: both are game-markets AND (shared event slug OR a
+    matched team pair). Never links standalone question-markets."""
+    if not (_is_game(a["title"], a.get("outcome")) and _is_game(b_title, b_outcome)):
+        return False
+    a_event = a.get("event_key") or ""
+    if a_event.startswith("ev:") and b_event and a_event == b_event:
+        return True
+    at, bt = _game_teams(a["title"]), _game_teams(b_title)
+    return bool(at and bt and set(at) == set(bt))
+
+
+def _side_token(outcome: str, title: str) -> str:
+    """Normalize what side a bet takes, for complementarity checks.
+    Over/Under for totals; else the team/entity named in outcome or spread title."""
+    o = (outcome or "").lower().strip()
+    if o in ("over", "under"):
+        return o
+    # spread/moneyline: the named team. Prefer the outcome, else parse 'Spread: X (-1.5)'
+    name = o
+    if not name or name in ("yes", "no"):
+        import re
+        m = re.search(r"spread:\s*(.+?)\s*\(", (title or "").lower())
+        if m:
+            name = m.group(1).strip()
+    return name
+
+
+def _true_hedge(a: dict, b_title: str, b_outcome: str, b_condition: str,
+                b_outcome_index: int, b_event: str) -> bool:
+    """Would holding BOTH a (open) and b (candidate) be self-hedging?
+    Only genuine complements are blocked:
+
+      1. Same market, opposing outcome (YES vs NO of one question).
+      2. Same game, totals on opposite sides (Over vs Under).
+      3. Same game, spread/moneyline on OPPOSING teams (France -1.5 vs Spain -1.5).
+
+    Allowed (not hedges): different questions sharing an event slug
+    (AOC-YES vs Vance-NO), same team's spread + moneyline, O/U + moneyline,
+    different-deadline variants of a question.
+    """
+    # 1. same market, opposing outcome
+    if a["condition_id"] == b_condition:
+        return a["outcome_index"] != b_outcome_index
+
+    if not _same_game(a, b_title, b_outcome, b_event):
+        return False
+
+    a_side = _side_token(a["outcome"], a["title"])
+    b_side = _side_token(b_outcome, b_title)
+    if not a_side or not b_side:
+        return False
+
+    a_ou = a_side in ("over", "under")
+    b_ou = b_side in ("over", "under")
+    # 2. totals opposite sides
+    if a_ou and b_ou:
+        return a_side != b_side
+    # mixing a total with a team pick on the same game is NOT a hedge
+    if a_ou != b_ou:
+        return False
+    # 3. team picks: opposing teams -> hedge; same team -> allowed.
+    # Substring-tolerant so "Brewers" == "Milwaukee Brewers".
+    if a_side in b_side or b_side in a_side:
+        return False
+    return True
+
+
+def open_position_conflict(condition_id: str, outcome_index: int, event_key: str,
+                           title: str = "", outcome: str = "") -> dict | None:
+    """Return an open position that would be a TRUE hedge against this entry,
+    or None. Only blocks genuine self-hedging (see _true_hedge)."""
     with db() as conn:
-        row = conn.execute("""
-            SELECT * FROM positions WHERE status='open' AND (
-                (condition_id=? AND outcome_index!=?)
-                OR (event_key=? AND (condition_id!=? OR outcome_index!=?))
-            ) LIMIT 1
-        """, (condition_id, outcome_index, event_key, condition_id, outcome_index)).fetchone()
-    return dict(row) if row else None
+        rows = conn.execute("SELECT * FROM positions WHERE status='open'").fetchall()
+    for r in rows:
+        a = dict(r)
+        if _true_hedge(a, title, outcome, condition_id, outcome_index, event_key):
+            return a
+    return None
 
 
 def category_breakdown() -> list[dict]:
     with db() as conn:
         rows = conn.execute("""
-            SELECT COALESCE(category, 'Uncategorized') AS category,
+            SELECT COALESCE(NULLIF(category, ''), 'Uncategorized') AS category,
                    COUNT(*) AS positions,
                    COALESCE(SUM(usd), 0) AS invested,
                    COALESCE(SUM(pnl), 0) AS pnl,
@@ -601,3 +773,17 @@ def whale_leaderboard() -> list[dict]:
         d["followed"] = d["address"] in followed
         out.append(d)
     return out
+
+
+# ── UI state (persisted interface preferences) ────────────────────────────
+def get_ui_state() -> dict:
+    with db() as conn:
+        row = conn.execute("SELECT v FROM kv WHERE k='ui_state'").fetchone()
+    return json.loads(row["v"]) if row else {}
+
+
+def save_ui_state(state: dict):
+    # bounded: it's interface preferences, not a dumping ground
+    blob = json.dumps(state)[:8000]
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO kv (k, v) VALUES ('ui_state', ?)", (blob,))

@@ -102,10 +102,11 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
         if days is not None and days > max_days:
             return fail("skipped", f"time horizon: resolves in {days:.0f}d > {max_days:.0f}d cap")
     conflict = store.open_position_conflict(
-        signal["condition_id"], signal["outcome_index"], store.event_key_for(signal))
+        signal["condition_id"], signal["outcome_index"], store.event_key_for(signal),
+        title=signal.get("title", ""), outcome=signal.get("outcome", ""))
     if conflict:
         return fail("skipped",
-                    f"already holding opposing side of this event: '{conflict['title']}' → {conflict['outcome']}")
+                    f"self-hedge: already hold '{conflict['title']}' → {conflict['outcome']}")
     if mode == "live":
         spent = store.spent_today_usd()
         if spent + usd > settings["daily_cap_usd"]:

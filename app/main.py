@@ -219,6 +219,19 @@ def set_levels(pos_id: int, body: LevelsBody, request: Request):
     return {"ok": True, "floor": body.floor, "ceiling": body.ceiling}
 
 
+@app.get("/api/ui-state")
+def get_ui_state(request: Request):
+    require_session(request)
+    return {"state": store.get_ui_state()}
+
+
+@app.post("/api/ui-state")
+async def post_ui_state(request: Request):
+    require_session(request)
+    store.save_ui_state(await request.json())
+    return {"ok": True}
+
+
 @app.get("/api/activity")
 def activity(request: Request):
     require_session(request)
@@ -261,6 +274,12 @@ async def scheduler():
 @app.on_event("startup")
 async def startup():
     store.init()
+    try:
+        n = store.backfill_categories()
+        if n:
+            print(f"backfilled categories for {n} positions")
+    except Exception:  # noqa: BLE001
+        pass
     asyncio.create_task(scheduler())
 
 
