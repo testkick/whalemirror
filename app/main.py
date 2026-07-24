@@ -119,6 +119,7 @@ def signals(request: Request):
 def get_settings(request: Request):
     require_session(request)
     return {"settings": store.get_settings(),
+            "category_choices": store.CATEGORY_CHOICES,
             "credentials": store.credentials_status(),
             "clob_available": mirror.CLOB_AVAILABLE,
             "spent_today": store.spent_today_usd()}
@@ -232,10 +233,22 @@ async def post_ui_state(request: Request):
     return {"ok": True}
 
 
+@app.get("/api/categories")
+def categories(request: Request):
+    require_session(request)
+    known = [label for label, _ in store.CATEGORY_KEYWORDS] + ["Uncategorized"]
+    seen = [c["category"] for c in store.category_breakdown()]
+    return {"categories": sorted(set(known) | set(seen)),
+            "enabled": store.get_settings().get("enabled_categories") or []}
+
+
 @app.get("/api/activity")
 def activity(request: Request):
     require_session(request)
-    return {"mirrors": store.mirror_history()}
+    rows = store.mirror_history()
+    for r in rows:
+        r["category"] = store.classify_category(r.get("title"), None)
+    return {"mirrors": rows}
 
 
 # ── Scheduler ─────────────────────────────────────────────────────────────
@@ -274,6 +287,12 @@ async def scheduler():
 @app.on_event("startup")
 async def startup():
     store.init()
+    # Existing deployments with history are already "set up" — don't gate them.
+    try:
+        if not store.get_settings().get("setup_complete") and store.all_positions(1):
+            store.save_settings({"setup_complete": True})
+    except Exception:  # noqa: BLE001
+        pass
     try:
         n = store.backfill_categories()
         if n:
@@ -300,6 +319,15 @@ def whale_leaderboard(request: Request):
     require_session(request)
     return {"whales": store.whale_leaderboard(),
             "followed": store.followed_whales()}
+
+
+@app.get("/api/whales/{address}")
+def whale_detail(address: str, request: Request):
+    require_session(request)
+    detail = store.whale_detail(address)
+    if not detail.get("found"):
+        raise HTTPException(404, "No mirrored positions attributed to this whale yet")
+    return detail
 
 
 @app.get("/healthz")

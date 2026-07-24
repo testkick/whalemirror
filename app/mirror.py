@@ -96,11 +96,21 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
     lo, hi = settings["min_entry_price"], settings["max_entry_price"]
     if not (lo <= price_now <= hi):
         return fail("skipped", f"entry band: price {price_now:.3f} outside [{lo:.2f}, {hi:.2f}]", price_now)
+    enabled_cats = settings.get("enabled_categories") or []
+    if enabled_cats:
+        cat = store.classify_category(signal.get("title"), signal.get("category"))
+        if cat not in enabled_cats:
+            return fail("skipped", f"category filter: '{cat}' not in enabled categories")
     max_days = settings.get("max_days_to_resolution") or 0
     if max_days:
         days = _days_to_end(signal.get("end_date"))
         if days is not None and days > max_days:
             return fail("skipped", f"time horizon: resolves in {days:.0f}d > {max_days:.0f}d cap")
+    enabled = settings.get("enabled_categories") or []
+    if enabled:
+        cat = store.classify_category(signal.get("title"), signal.get("category"))
+        if cat not in enabled:
+            return fail("skipped", f"category focus: '{cat}' not in enabled categories")
     conflict = store.open_position_conflict(
         signal["condition_id"], signal["outcome_index"], store.event_key_for(signal),
         title=signal.get("title", ""), outcome=signal.get("outcome", ""))
@@ -149,6 +159,8 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
 def auto_mirror_pass(signals: list[dict]) -> list[dict]:
     """Called by the scheduler after each refresh. Mirrors new qualifying signals."""
     settings = store.get_settings()
+    if not settings.get("setup_complete"):
+        return []   # first-run: nothing mirrors until preferences are confirmed
     if not settings["auto_mirror"]:
         return []
     already = store.mirrored_signal_ids()

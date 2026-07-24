@@ -155,6 +155,10 @@ SETTINGS_DEFAULTS = {
     "max_entry_price": 1.0,
     "max_days_to_resolution": 0,   # skip signals ending beyond N days (0 = off)
     "max_hold_days": 0,            # auto-close positions held longer (0 = off)
+    "enabled_categories": [],      # [] = all categories allowed
+    "setup_complete": False,       # first-run wizard gate
+    "enabled_categories": [],      # [] = all categories allowed
+    "onboarded": False,            # first-run setup completed
     "min_score_to_mirror": 8.0,
     "refresh_minutes": 15,
     # engine knobs surfaced in the UI
@@ -172,6 +176,8 @@ def get_settings() -> dict:
 
 def save_settings(patch: dict):
     allowed = {k: patch[k] for k in patch if k in SETTINGS_DEFAULTS}
+    if allowed.get("enabled_categories") is not None and "enabled_categories" in allowed:
+        allowed["enabled_categories"] = [str(c) for c in allowed["enabled_categories"]][:20]
     merged = {**get_settings(), **allowed}
     with db() as conn:
         conn.execute("INSERT OR REPLACE INTO kv (k, v) VALUES ('settings', ?)",
@@ -284,6 +290,17 @@ def spent_today_usd() -> float:
 
 # ── Position tracking ─────────────────────────────────────────────────────
 CATEGORY_KEYWORDS = [
+    ("Esports", ["counter-strike", "cs2", "csgo", "dota", "league of legends",
+                 "lol:", "valorant", "overwatch", "rocket league", "starcraft",
+                 "rainbow six", "call of duty", "(bo1)", "(bo3)", "(bo5)",
+                 "map handicap", "esports", "cct ", "lfl ", "lec ", "lcs ",
+                 "playoffs -", "regular season -"]),
+    ("Tennis", ["atp", "wta", "wimbledon", "roland garros", "australian open",
+                "grand slam", "itf", "challenger tour"]),
+    ("Soccer", ["premier league", "la liga", "serie a", "bundesliga", "ligue 1",
+                "champions league", "europa league", "mls", "fifa",
+                "corinthians", "anderlecht", "real madrid", "barcelona",
+                "liverpool", "arsenal", "chelsea", "juventus", "bayern"]),
     ("Sports", ["nba", "nfl", "mlb", "nhl", "vs.", " vs ", "o/u", "spread:",
                 "dodgers", "yankees", "lakers", "celtics", "premier league",
                 "champions league", "world cup", "super bowl", "playoff",
@@ -314,10 +331,26 @@ def classify_category(title: str, given: str | None = None) -> str:
     if given and given.strip() and given.strip().lower() != "uncategorized":
         return given.strip()
     t = (title or "").lower()
+    import re
+    # Structural patterns first — they are more specific than generic keywords.
+    # "City: Player A vs Player B" (no league/team markers) -> tennis-style singles
+    if (re.match(r"^[a-z .'\-]+:\s+[a-z .'\-]+\s+vs\.?\s+[a-z .'\-]+$", t)
+            and not any(k in t for k in ("bo1", "bo3", "bo5", "o/u", "spread",
+                                         "handicap", "counter-strike", "lol",
+                                         "dota", "valorant"))):
+        return "Tennis"
+    # "Will <club> win on YYYY-MM-DD?" -> soccer daily fixture
+    if re.search(r"will .+ win on \d{4}-\d{2}-\d{2}", t):
+        return "Soccer"
     for label, kws in CATEGORY_KEYWORDS:
         if any(k in t for k in kws):
             return label
     return "Uncategorized"
+
+
+CATEGORY_CHOICES = ["Sports", "Soccer", "Tennis", "Esports", "Politics",
+                    "Geopolitics", "Crypto", "Economics", "Tech", "Culture",
+                    "Uncategorized"]
 
 
 def backfill_categories() -> int:
@@ -787,3 +820,133 @@ def save_ui_state(state: dict):
     blob = json.dumps(state)[:8000]
     with db() as conn:
         conn.execute("INSERT OR REPLACE INTO kv (k, v) VALUES ('ui_state', ?)", (blob,))
+
+
+def whale_detail(address: str) -> dict:
+    """Per-whale breakdown: our results with them, by category, plus samples."""
+    address = address.lower()
+    with db() as conn:
+        prof = conn.execute("""
+            SELECT MAX(pw.name) AS name, COUNT(*) AS positions,
+                   COALESCE(SUM(p.usd),0) AS invested, COALESCE(SUM(p.pnl),0) AS pnl,
+                   SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<=0) THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN p.status='open' THEN 1 ELSE 0 END) AS open_count,
+                   COALESCE(SUM(CASE WHEN p.status='open' THEN p.pnl ELSE 0 END),0) AS unrealized,
+                   COALESCE(SUM(CASE WHEN p.status!='open' THEN p.pnl ELSE 0 END),0) AS realized,
+                   MIN(p.ts) AS first_seen, MAX(p.ts) AS last_seen
+            FROM position_whales pw JOIN positions p ON p.id = pw.position_id
+            WHERE pw.address = ?
+        """, (address,)).fetchone()
+
+        cats = conn.execute("""
+            SELECT COALESCE(NULLIF(p.category,''),'Uncategorized') AS category,
+                   COUNT(*) AS positions, COALESCE(SUM(p.usd),0) AS invested,
+                   COALESCE(SUM(p.pnl),0) AS pnl,
+                   SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<=0) THEN 1 ELSE 0 END) AS losses
+            FROM position_whales pw JOIN positions p ON p.id = pw.position_id
+            WHERE pw.address = ? GROUP BY 1 ORDER BY pnl DESC
+        """, (address,)).fetchall()
+
+        def sample(where, order, limit=8):
+            return [dict(r) for r in conn.execute(
+                "SELECT p.* FROM position_whales pw JOIN positions p ON p.id = pw.position_id "
+                f"WHERE pw.address = ? AND {where} ORDER BY {order} LIMIT ?",
+                (address, limit)).fetchall()]
+
+        open_sample = sample("p.status='open'", "p.pnl DESC")
+        best = sample("p.status!='open'", "p.pnl DESC", 5)
+        worst = sample("p.status!='open'", "p.pnl ASC", 5)
+
+        co = conn.execute("""
+            SELECT o.address, MAX(o.name) AS name, COUNT(*) AS shared
+            FROM position_whales pw
+            JOIN position_whales o ON o.position_id = pw.position_id AND o.address != pw.address
+            WHERE pw.address = ? GROUP BY o.address ORDER BY shared DESC LIMIT 8
+        """, (address,)).fetchall()
+
+    p = dict(prof) if prof else {}
+    settled = (p.get("wins") or 0) + (p.get("losses") or 0)
+    p["win_rate"] = round(p["wins"] / settled, 3) if settled else None
+    p["roi"] = round(p["pnl"] / p["invested"], 4) if p.get("invested") else 0.0
+    p["address"] = address
+    p["followed"] = address in followed_whales()
+    cat_rows = []
+    for r in cats:
+        d = dict(r)
+        d["roi"] = round(d["pnl"] / d["invested"], 4) if d["invested"] else 0.0
+        cat_rows.append(d)
+    return {"profile": p, "categories": cat_rows, "open_positions": open_sample,
+            "best": best, "worst": worst, "co_whales": [dict(r) for r in co]}
+
+
+def whale_detail(address: str) -> dict:
+    """Everything we know about one whale from OUR mirrored results:
+    headline stats, per-category breakdown, and sample positions."""
+    address = (address or "").lower()
+    with db() as conn:
+        head = conn.execute("""
+            SELECT MAX(pw.name) AS name, COUNT(*) AS positions,
+                   COALESCE(SUM(p.usd),0) AS invested,
+                   COALESCE(SUM(p.pnl),0) AS pnl,
+                   SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<=0) THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN p.status='open' THEN 1 ELSE 0 END) AS open_count,
+                   MIN(p.ts) AS first_seen, MAX(p.ts) AS last_seen,
+                   COALESCE(AVG(p.entry_price),0) AS avg_entry
+            FROM position_whales pw JOIN positions p ON p.id = pw.position_id
+            WHERE pw.address = ?
+        """, (address,)).fetchone()
+
+        cats = conn.execute("""
+            SELECT COALESCE(NULLIF(p.category,''),'Uncategorized') AS category,
+                   COUNT(*) AS positions,
+                   COALESCE(SUM(p.usd),0) AS invested,
+                   COALESCE(SUM(p.pnl),0) AS pnl,
+                   SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<=0) THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN p.status='open' THEN 1 ELSE 0 END) AS open_count
+            FROM position_whales pw JOIN positions p ON p.id = pw.position_id
+            WHERE pw.address = ?
+            GROUP BY COALESCE(NULLIF(p.category,''),'Uncategorized')
+            ORDER BY pnl DESC
+        """, (address,)).fetchall()
+
+        def sample(where: str, order: str, limit: int = 5):
+            return [dict(r) for r in conn.execute(f"""
+                SELECT p.id, p.title, p.outcome, p.category, p.usd, p.entry_price,
+                       p.last_price, p.pnl, p.status, p.exit_reason, p.ts, p.closed_ts
+                FROM position_whales pw JOIN positions p ON p.id = pw.position_id
+                WHERE pw.address = ? AND {where}
+                ORDER BY {order} LIMIT ?
+            """, (address, limit)).fetchall()]
+
+        open_positions = sample("p.status='open'", "p.pnl DESC")
+        best = sample("p.status!='open'", "p.pnl DESC")
+        worst = sample("p.status!='open'", "p.pnl ASC")
+
+    h = dict(head) if head and (head["positions"] or 0) > 0 else {}
+    if not h:
+        return {"address": address, "found": False}
+    settled = h["wins"] + h["losses"]
+    cat_rows = []
+    for r in cats:
+        d = dict(r)
+        d["roi"] = round(d["pnl"] / d["invested"], 4) if d["invested"] else 0.0
+        s = d["wins"] + d["losses"]
+        d["win_rate"] = round(d["wins"] / s, 3) if s else None
+        cat_rows.append(d)
+    return {
+        "found": True, "address": address, "name": h["name"],
+        "positions": h["positions"], "invested": round(h["invested"], 2),
+        "pnl": round(h["pnl"], 2),
+        "roi": round(h["pnl"] / h["invested"], 4) if h["invested"] else 0.0,
+        "wins": h["wins"], "losses": h["losses"], "open_count": h["open_count"],
+        "win_rate": round(h["wins"] / settled, 3) if settled else None,
+        "avg_entry": round(h["avg_entry"], 3),
+        "first_seen": h["first_seen"], "last_seen": h["last_seen"],
+        "followed": address in followed_whales(),
+        "categories": cat_rows,
+        "samples": {"open": open_positions, "best": best, "worst": worst},
+    }
