@@ -49,16 +49,16 @@ class ConsensusEngine:
         url = f"{DATA_API}{path}"
         for attempt in range(4):
             try:
-                r = self.session.get(url, params=params, timeout=20)
+                r = self.session.get(url, params=params, timeout=10)
                 if r.status_code == 429:
                     time.sleep(2 ** attempt)
                     continue
                 r.raise_for_status()
                 return r.json()
             except requests.RequestException:
-                if attempt == 3:
+                if attempt >= 2:
                     return None
-                time.sleep(1.5 ** attempt)
+                time.sleep(0.75 * (attempt + 1))
         return None
 
     # ── Stage 1: whales ──────────────────────────────────────────────────

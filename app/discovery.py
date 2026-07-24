@@ -28,25 +28,27 @@ DISCOVERY_DEFAULTS = {
     "min_trade_usd": 2000.0,      # fill size that flags a wallet as interesting
     "trades_limit": 500,
     "score_batch": 150,           # max wallets scored per sweep
+    "score_budget_secs": 180,     # hard time budget for the scoring phase
+    "holders_budget_secs": 120,   # hard time budget for holder discovery
     "score_ttl_hours": 24.0,
     "min_self_trades": 10,        # closed positions required to qualify
     "min_self_pnl": 10000.0,      # realized USD required to qualify
 }
 
 
-def _get(session: requests.Session, url: str, **params):
-    for attempt in range(3):
+def _get(session: requests.Session, url: str, timeout: float = 8.0, **params):
+    for attempt in range(2):
         try:
-            r = session.get(url, params=params, timeout=20)
+            r = session.get(url, params=params, timeout=timeout)
             if r.status_code == 429:
-                time.sleep(2 ** attempt)
+                time.sleep(1 + attempt)
                 continue
             r.raise_for_status()
             return r.json()
         except requests.RequestException:
-            if attempt == 2:
+            if attempt == 1:
                 return None
-            time.sleep(1.5 ** attempt)
+            time.sleep(0.5)
     return None
 
 
@@ -84,9 +86,14 @@ def _walk_holders(node, out: dict):
 
 
 def holder_wallets(session, condition_ids: list[str], per_market: int,
-                   delay: float, progress=None) -> dict[str, str]:
+                   delay: float, progress=None, budget_secs: float = 120) -> dict[str, str]:
     found: dict[str, str] = {}
+    deadline = time.time() + budget_secs
     for i, cid in enumerate(condition_ids, 1):
+        if time.time() > deadline:
+            if progress:
+                progress(i, len(condition_ids), f"holders budget reached ({i-1} markets)")
+            break
         if progress:
             progress(i, len(condition_ids), f"holders {i}/{len(condition_ids)}")
         data = _get(session, f"{DATA_API}/holders", market=cid, limit=per_market)
@@ -168,7 +175,8 @@ def build_pool(engine, progress=None) -> dict[str, dict]:
         progress(0, 1, "top markets by volume")
     cids = top_markets(session, cfg["holders_markets"])
     discovered = holder_wallets(session, cids, cfg["holders_per_market"],
-                                cfg["request_delay"], progress=progress)
+                                cfg["request_delay"], progress=progress,
+                                budget_secs=cfg.get("holders_budget_secs", 120))
     for addr in discovered:
         discovered[addr] = (discovered[addr], "holders")
 
@@ -183,7 +191,12 @@ def build_pool(engine, progress=None) -> dict[str, dict]:
     candidates = [a for a in discovered if a not in whales]
     stale_before = time.time() - cfg["score_ttl_hours"] * 3600
     to_score = store.wallets_needing_score(candidates, stale_before)[: cfg["score_batch"]]
+    score_deadline = time.time() + cfg.get("score_budget_secs", 180)
     for i, addr in enumerate(to_score, 1):
+        if time.time() > score_deadline:
+            if progress:
+                progress(i, len(to_score), f"scoring budget reached ({i-1}/{len(to_score)} scored)")
+            break   # remaining wallets stay stale and get picked up next sweep
         if progress:
             progress(i, len(to_score), f"scoring wallet {i}/{len(to_score)}")
         rec = score_wallet(session, addr)

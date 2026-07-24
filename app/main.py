@@ -27,7 +27,10 @@ app = FastAPI(title="WhaleMirror", docs_url=None, redoc_url=None)
 # Secure cookies by default (Railway/any HTTPS proxy). Set COOKIE_SECURE=false
 # only for plain-HTTP local dev or SSH-tunnel access.
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() != "false"
-_state = {"refreshing": False, "progress": "", "last_error": None, "auto_results": []}
+_state = {"refreshing": False, "progress": "", "last_error": None, "auto_results": [],
+          "started_at": 0.0, "progress_at": 0.0}
+SWEEP_MAX_SECS = 900        # a sweep may never occupy the slot longer than this
+PROGRESS_STALL_SECS = 300   # no progress update for this long == stalled
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────
@@ -72,6 +75,7 @@ def _run_refresh():
 
     def progress(i, n, name):
         _state["progress"] = f"Scanning whale {i}/{n} ({name})"
+        _state["progress_at"] = time.time()
 
     signals = engine.run(progress=progress, followed=store.followed_whales())
     store.upsert_signals(signals)
@@ -83,9 +87,10 @@ def _run_refresh():
 @app.post("/api/refresh")
 async def refresh(request: Request):
     require_session(request)
-    if _state["refreshing"]:
+    if _state["refreshing"] and not _sweep_is_stale():
         return {"ok": False, "detail": "Refresh already running"}
-    _state.update(refreshing=True, last_error=None, progress="Fetching leaderboards")
+    _state.update(refreshing=True, last_error=None, progress="Fetching leaderboards",
+                  started_at=time.time(), progress_at=time.time())
 
     async def task():
         try:
@@ -109,6 +114,8 @@ def signals(request: Request):
         "last_refresh": store.last_refresh(),
         "refreshing": _state["refreshing"],
         "progress": _state["progress"],
+        "sweep_elapsed": round(time.time() - _state["started_at"]) if _state["refreshing"] else 0,
+        "sweep_stale": _sweep_is_stale(),
         "last_error": _state["last_error"],
         "auto_results": _state["auto_results"],
     }
@@ -259,6 +266,17 @@ def activity(request: Request):
     return {"mirrors": rows}
 
 
+def _sweep_is_stale() -> bool:
+    """A sweep that has run too long, or gone silent, is considered dead so the
+    slot can be reclaimed. Without this one hung sweep blocks all future ones."""
+    if not _state["refreshing"]:
+        return False
+    now = time.time()
+    started = _state.get("started_at") or 0
+    last_progress = _state.get("progress_at") or started
+    return (now - started > SWEEP_MAX_SECS) or (now - last_progress > PROGRESS_STALL_SECS)
+
+
 # ── Scheduler ─────────────────────────────────────────────────────────────
 async def scheduler():
     await asyncio.sleep(5)
@@ -268,8 +286,12 @@ async def scheduler():
         settings = store.get_settings()
         interval = max(10, int(settings["refresh_minutes"])) * 60
         last = store.last_refresh() or 0
+        if _sweep_is_stale():
+            _state.update(refreshing=False, progress="",
+                          last_error="Previous sweep stalled and was reset")
         if not _state["refreshing"] and time.time() - last > interval:
-            _state.update(refreshing=True, progress="Scheduled refresh")
+            _state.update(refreshing=True, progress="Scheduled refresh",
+                          started_at=time.time(), progress_at=time.time())
             try:
                 await asyncio.to_thread(_run_refresh)
                 _state["last_error"] = None
