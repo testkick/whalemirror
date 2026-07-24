@@ -21,6 +21,152 @@
   </div>
 </div>
 
+<!-- First-run setup -->
+<div id="onboard" class="modal hidden">
+  <div class="modal-card onboard-card">
+    <h2 class="onboard-title">Set up mirroring</h2>
+    <p class="hint">Configure this before auto-mirroring starts. Everything here is editable later in Settings.</p>
+
+    <div class="onboard-section">
+      <h3>Categories to focus on</h3>
+      <p class="hint">Only these get mirrored. Leave all selected to mirror everything.</p>
+      <div id="ob-categories" class="cat-chips"></div>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="chip" id="ob-cat-all">Select all</button>
+        <button class="chip" id="ob-cat-none">Clear</button>
+      </div>
+    </div>
+
+    <div class="onboard-section">
+      <h3>Execution</h3>
+      <label class="switch-label"><input type="checkbox" id="ob-dry-run" checked> Dry run (simulate orders)</label>
+      <label class="switch-label"><input type="checkbox" id="ob-auto"> Auto-mirror new signals</label>
+      <div class="field-pair">
+        <label>Per-trade size (USD)<input type="number" id="ob-per-trade" value="25" min="1"></label>
+        <label>Daily cap (USD)<input type="number" id="ob-daily-cap" value="100" min="1"></label>
+      </div>
+      <div class="field-pair">
+        <label>Score floor for auto<input type="number" id="ob-score-floor" value="8" step="0.5"></label>
+        <label>Max slippage (¢)<input type="number" id="ob-slippage" value="3" step="0.5"></label>
+      </div>
+    </div>
+
+    <div class="onboard-section">
+      <h3>Risk &amp; horizon</h3>
+      <div class="field-pair">
+        <label>Stop-loss (% from entry)<input type="number" id="ob-stop-pct" value="0" min="0"></label>
+        <label>Max hold (days)<input type="number" id="ob-max-hold" value="0" min="0"></label>
+      </div>
+      <div class="field-pair">
+        <label>Min entry price (¢)<input type="number" id="ob-min-entry" value="0" min="0" max="99"></label>
+        <label>Max entry price (¢)<input type="number" id="ob-max-entry" value="100" min="1" max="100"></label>
+      </div>
+      <div class="field-pair">
+        <label>Max days to resolution<input type="number" id="ob-max-days" value="0" min="0"></label>
+        <label>Sweep interval (min)<input type="number" id="ob-refresh" value="15" min="10"></label>
+      </div>
+      <label class="switch-label"><input type="checkbox" id="ob-exit-whales" checked> Exit with the whales</label>
+    </div>
+
+    <div class="btn-row">
+      <button id="ob-save" class="btn btn-primary">Start mirroring</button>
+      <button id="ob-skip" class="btn btn-ghost">Skip for now</button>
+    </div>
+  </div>
+</div>
+
+<!-- Whale detail drawer -->
+<div id="whale-drawer" class="modal hidden">
+  <div class="modal-card drawer-card">
+    <div class="drawer-head">
+      <div>
+        <h2 id="wd-name">Whale</h2>
+        <span id="wd-address" class="hint mono"></span>
+      </div>
+      <div class="btn-row">
+        <button id="wd-follow" class="btn btn-mirror">Follow</button>
+        <button id="wd-close" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+    <div id="wd-stats" class="stat-cards"></div>
+    <h3 class="drawer-h3">By category</h3>
+    <table class="activity-table"><thead><tr><th>Category</th><th class="num">Bets</th><th class="num">Invested</th><th class="num">P&L</th><th class="num">ROI</th><th class="num">W / L</th></tr></thead><tbody id="wd-cats"></tbody></table>
+    <h3 class="drawer-h3">Open with this whale</h3>
+    <table class="activity-table"><thead><tr><th>Market</th><th>Category</th><th>Side</th><th class="num">Entry</th><th class="num">Last</th><th class="num">P&L</th></tr></thead><tbody id="wd-open"></tbody></table>
+    <div class="drawer-split">
+      <div>
+        <h3 class="drawer-h3">Best closed</h3>
+        <table class="activity-table"><thead><tr><th>Market</th><th class="num">P&L</th></tr></thead><tbody id="wd-best"></tbody></table>
+      </div>
+      <div>
+        <h3 class="drawer-h3">Worst closed</h3>
+        <table class="activity-table"><thead><tr><th>Market</th><th class="num">P&L</th></tr></thead><tbody id="wd-worst"></tbody></table>
+      </div>
+    </div>
+    <h3 class="drawer-h3">Frequently co-signs with</h3>
+    <div id="wd-cowhales" class="whale-chips"></div>
+  </div>
+</div>
+
+<!-- First-run setup -->
+<div id="setup" class="setup hidden">
+  <div class="setup-card">
+    <div class="wordmark">WHALE<span>MIRROR</span></div>
+    <h2 class="setup-title">Set your preferences before mirroring starts</h2>
+    <p class="hint">Auto-mirroring is paused until you finish. Everything here can be changed later in Settings.</p>
+
+    <div class="setup-section">
+      <h3>Mode</h3>
+      <label class="switch-label"><input type="checkbox" id="w-dry-run" checked> Dry run (simulate every order)</label>
+      <label class="switch-label"><input type="checkbox" id="w-auto-mirror" checked> Auto-mirror new signals each sweep</label>
+    </div>
+
+    <div class="setup-section">
+      <h3>Size &amp; caps</h3>
+      <div class="field-pair">
+        <label>Per-trade size (USD)<input type="number" id="w-per-trade" value="25" min="1"></label>
+        <label>Daily cap (USD)<input type="number" id="w-daily-cap" value="100" min="1"></label>
+      </div>
+      <div class="field-pair">
+        <label>Score floor for auto<input type="number" id="w-score-floor" value="8" step="0.5"></label>
+        <label>Max slippage (¢)<input type="number" id="w-slippage" value="3" step="0.5"></label>
+      </div>
+    </div>
+
+    <div class="setup-section">
+      <h3>Entry gates</h3>
+      <div class="field-pair">
+        <label>Min entry price (¢)<input type="number" id="w-min-entry" value="0" min="0" max="99"></label>
+        <label>Max entry price (¢)<input type="number" id="w-max-entry" value="100" min="1" max="100"></label>
+      </div>
+      <div class="field-pair">
+        <label>Time horizon: max days<input type="number" id="w-max-days" value="0" min="0"></label>
+        <label>Stop-loss (% from entry)<input type="number" id="w-stop-pct" value="0" min="0" max="95"></label>
+      </div>
+      <span class="hint">0 = off.</span>
+    </div>
+
+    <div class="setup-section">
+      <h3>Categories to mirror</h3>
+      <p class="hint">Leave all selected to mirror everything. Deselect to focus capital on specific market types.</p>
+      <div id="w-categories" class="cat-chips"></div>
+    </div>
+
+    <div class="btn-row">
+      <button id="setup-save" class="btn btn-primary">Start mirroring</button>
+      <button id="setup-skip" class="btn btn-ghost">Use defaults</button>
+    </div>
+  </div>
+</div>
+
+<!-- Whale detail modal -->
+<div id="whale-modal" class="modal hidden">
+  <div class="modal-card">
+    <button class="modal-close" id="whale-close">&times;</button>
+    <div id="whale-detail-body"></div>
+  </div>
+</div>
+
 <!-- App shell -->
 <div id="app" class="hidden">
   <header>
@@ -121,7 +267,7 @@
         <span id="pf-count" class="filter-count"></span>
       </div>
       <table class="activity-table" id="positions-table">
-        <thead><tr><th>Opened</th><th>Market</th><th>Side</th><th class="num">Cost</th><th class="num">Entry</th><th class="num">Last</th><th class="num">P&L</th><th class="num">Floor</th><th class="num">Ceiling</th><th>Mode</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Opened</th><th>Market</th><th>Category</th><th>Side</th><th class="num">Cost</th><th class="num">Entry</th><th class="num">Last</th><th class="num">P&L</th><th class="num">Floor</th><th class="num">Ceiling</th><th>Mode</th><th>Status</th><th></th></tr></thead>
         <tbody id="positions-body"></tbody>
       </table>
     </section>
@@ -146,7 +292,7 @@
     <section id="tab-activity" class="tab-panel hidden">
       <div id="activity-empty" class="empty hidden">No mirror activity yet.</div>
       <table class="activity-table">
-        <thead><tr><th>When</th><th>Market</th><th>Side</th><th class="num">USD</th><th class="num">Price</th><th>Mode</th><th>Status</th><th>Detail</th></tr></thead>
+        <thead><tr><th>When</th><th>Market</th><th>Category</th><th>Side</th><th class="num">USD</th><th class="num">Price</th><th>Mode</th><th>Status</th><th>Detail</th></tr></thead>
         <tbody id="activity-body"></tbody>
       </table>
     </section>
@@ -203,6 +349,15 @@
           </div>
           <div class="field-pair">
             <label>Time horizon: max days to resolution<input type="number" id="s-max-days" min="0" step="1"></label>
+          </div>
+          <div class="field-row">
+            <label>Categories to mirror</label>
+            <div id="s-categories" class="cat-chips"></div>
+            <span class="hint">None selected = all categories mirrored.</span>
+          </div>
+          <div class="field-row">
+            <label>Categories to mirror <span class="hint">None selected = all allowed</span></label>
+            <div id="s-categories" class="cat-chips"></div>
           </div>
           <span class="hint">0 = off for stop-loss, hold cap, and time horizon. Entry band and horizon gate both auto and manual mirrors — skips are logged to Activity.</span>
         </div>

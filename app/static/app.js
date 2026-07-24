@@ -237,6 +237,7 @@ async function loadActivity() {
     <tr>
       <td>${new Date(m.ts * 1000).toLocaleString()}</td>
       <td>${esc(m.title || "")}</td>
+      <td><span class="cat-tag">${esc(m.category || "Uncategorized")}</span></td>
       <td>${esc(m.outcome || "")}</td>
       <td class="num">$${(m.usd || 0).toFixed(2)}</td>
       <td class="num">${(m.price || 0).toFixed(3)}</td>
@@ -364,6 +365,7 @@ async function loadPerformance() {
     <tr>
       <td>${new Date(p.ts * 1000).toLocaleDateString()}${open ? `<span class="held">held ${Math.floor((Date.now() / 1000 - p.ts) / 86400)}d</span>` : ""}</td>
       <td>${esc(p.title || "")}</td>
+      <td><span class="cat-tag">${esc(p.category || "Uncategorized")}</span></td>
       <td>${esc(p.outcome || "")}</td>
       <td class="num">$${p.usd.toFixed(2)}</td>
       <td class="num">${p.entry_price.toFixed(3)}</td>
@@ -447,8 +449,8 @@ function renderWhales() {
   });
   $("whales-empty").classList.toggle("hidden", rows.length > 0);
   $("whales-body").innerHTML = rows.map((w) => `
-    <tr>
-      <td>${esc(w.name)}</td>
+    <tr class="whale-row" data-wopen="${esc(w.address)}">
+      <td><span class="whale-name-link">${esc(w.name)}</span></td>
       <td class="num">${w.positions}</td>
       <td class="num">${w.wins} / ${w.losses}</td>
       <td class="num">${w.win_rate != null ? (w.win_rate * 100).toFixed(0) + "%" : "\u2014"}</td>
@@ -459,8 +461,18 @@ function renderWhales() {
       <td>${new Date(w.last_seen * 1000).toLocaleDateString()}</td>
       <td><button class="btn ${w.followed ? "" : "btn-mirror"}" data-wfollow="${esc(w.address)}" data-wname="${esc(w.name)}">${w.followed ? "Unfollow" : "Follow"}</button></td>
     </tr>`).join("");
+  document.querySelectorAll("[data-wopen]").forEach((tr) => {
+    tr.onclick = (e) => {
+      if (e.target.closest("[data-wfollow]")) return;  // follow button handles itself
+      openWhaleDrawer(tr.dataset.wopen);
+    };
+  });
+  document.querySelectorAll("[data-wopen]").forEach((el) => {
+    el.onclick = () => openWhale(el.dataset.wopen);
+  });
   document.querySelectorAll("[data-wfollow]").forEach((btn) => {
-    btn.onclick = async () => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
       const addr = btn.dataset.wfollow, name = btn.dataset.wname;
       const isFollowed = whaleData.whales.find((w) => w.address === addr)?.followed;
       if (isFollowed) await api(`/api/whales/follow/${addr}`, { method: "DELETE" });
@@ -478,6 +490,128 @@ document.querySelectorAll("#whales-table th[data-ws]").forEach((th) => {
   };
 });
 
+/* ── Whale detail drawer ───────────────────────────────────────────── */
+let drawerAddress = null;
+async function openWhaleDrawer(address) {
+  drawerAddress = address;
+  const d = await api(`/api/whales/${address}`);
+  const p = d.profile;
+  $("wd-name").textContent = p.name || address.slice(0, 12);
+  $("wd-address").textContent = address;
+  $("wd-follow").textContent = p.followed ? "Unfollow" : "Follow";
+  $("wd-follow").className = "btn " + (p.followed ? "btn-ghost" : "btn-mirror");
+
+  const days = p.first_seen ? Math.max(1, Math.round((Date.now() / 1000 - p.first_seen) / 86400)) : 0;
+  $("wd-stats").innerHTML = [
+    ["Our P&L", money(p.pnl || 0), pnlCls(p.pnl || 0)],
+    ["ROI", ((p.roi || 0) * 100).toFixed(1) + "%", pnlCls(p.roi || 0)],
+    ["Co-signed", p.positions || 0, ""],
+    ["Win rate", p.win_rate != null ? (p.win_rate * 100).toFixed(0) + "%" : "\u2014", ""],
+    ["W / L", `${p.wins || 0} / ${p.losses || 0}`, ""],
+    ["Open", p.open_count || 0, ""],
+    ["Invested", "$" + (p.invested || 0).toFixed(0), ""],
+    ["Tracked", days + "d", ""],
+  ].map(([label, val, cls]) =>
+    `<div class="stat-card"><label>${label}</label><b class="${cls}">${val}</b></div>`).join("");
+
+  $("wd-cats").innerHTML = (d.categories || []).map((c) => `
+    <tr><td><span class="cat-tag">${esc(c.category)}</span></td>
+      <td class="num">${c.positions}</td>
+      <td class="num">$${c.invested.toFixed(0)}</td>
+      <td class="num ${pnlCls(c.pnl)}">${money(c.pnl)}</td>
+      <td class="num ${pnlCls(c.roi)}">${(c.roi * 100).toFixed(1)}%</td>
+      <td class="num">${c.wins} / ${c.losses}</td></tr>`).join("")
+    || `<tr><td colspan="6" class="hint">No settled bets yet.</td></tr>`;
+
+  $("wd-open").innerHTML = (d.open_positions || []).map((p2) => `
+    <tr><td>${esc(p2.title)}</td>
+      <td><span class="cat-tag">${esc(p2.category || "Uncategorized")}</span></td>
+      <td>${esc(p2.outcome)}</td>
+      <td class="num">${p2.entry_price.toFixed(3)}</td>
+      <td class="num">${(p2.last_price ?? p2.entry_price).toFixed(3)}</td>
+      <td class="num ${pnlCls(p2.pnl)}">${money(p2.pnl)}</td></tr>`).join("")
+    || `<tr><td colspan="6" class="hint">No open positions with this whale.</td></tr>`;
+
+  const rowsOf = (arr) => (arr || []).map((x) => `
+    <tr><td>${esc(x.title)} <span class="hint">\u2192 ${esc(x.outcome)}</span></td>
+      <td class="num ${pnlCls(x.pnl)}">${money(x.pnl)}</td></tr>`).join("")
+    || `<tr><td colspan="2" class="hint">None yet.</td></tr>`;
+  $("wd-best").innerHTML = rowsOf(d.best);
+  $("wd-worst").innerHTML = rowsOf(d.worst);
+
+  $("wd-cowhales").innerHTML = (d.co_whales || []).map((w) =>
+    `<span class="whale-chip" data-cowhale="${esc(w.address)}">${esc(w.name)} \u00B7 ${w.shared}</span>`).join("")
+    || `<span class="hint">No co-signers yet.</span>`;
+  document.querySelectorAll("[data-cowhale]").forEach((c) => {
+    c.onclick = () => openWhaleDrawer(c.dataset.cowhale);
+  });
+
+  $("whale-drawer").classList.remove("hidden");
+}
+$("wd-close").onclick = () => $("whale-drawer").classList.add("hidden");
+$("whale-drawer").onclick = (e) => { if (e.target.id === "whale-drawer") $("whale-drawer").classList.add("hidden"); };
+$("wd-follow").onclick = async () => {
+  const isFollow = $("wd-follow").textContent === "Follow";
+  const name = $("wd-name").textContent;
+  if (isFollow) await api("/api/whales/follow", { method: "POST", body: JSON.stringify({ address: drawerAddress, name }) });
+  else await api(`/api/whales/follow/${drawerAddress}`, { method: "DELETE" });
+  openWhaleDrawer(drawerAddress);
+  loadWhales();
+};
+
+/* ── Category chips (settings + onboarding) ────────────────────────── */
+function renderCatChips(containerId, choices, selected) {
+  $(containerId).innerHTML = choices.map((c) =>
+    `<span class="cat-chip ${selected.includes(c) ? "on" : ""}" data-cat="${esc(c)}">${esc(c)}</span>`).join("");
+  $(containerId).querySelectorAll("[data-cat]").forEach((chip) => {
+    chip.onclick = () => chip.classList.toggle("on");
+  });
+}
+function readCatChips(containerId) {
+  return [...$(containerId).querySelectorAll(".cat-chip.on")].map((c) => c.dataset.cat);
+}
+
+/* ── First-run onboarding ──────────────────────────────────────────── */
+async function maybeOnboard(settings, choices) {
+  if (settings.onboarded) return;
+  renderCatChips("ob-categories", choices, choices);  // all on by default
+  $("ob-categories").querySelectorAll(".cat-chip").forEach((c) => c.classList.add("on"));
+  $("onboard").classList.remove("hidden");
+}
+$("ob-cat-all").onclick = () => $("ob-categories").querySelectorAll(".cat-chip").forEach((c) => c.classList.add("on"));
+$("ob-cat-none").onclick = () => $("ob-categories").querySelectorAll(".cat-chip").forEach((c) => c.classList.remove("on"));
+$("ob-skip").onclick = async () => {
+  await api("/api/settings", { method: "POST", body: JSON.stringify({ onboarded: true }) });
+  $("onboard").classList.add("hidden");
+  loadSettings();
+};
+$("ob-save").onclick = async () => {
+  const cats = readCatChips("ob-categories");
+  const allSelected = cats.length === $("ob-categories").querySelectorAll(".cat-chip").length;
+  try {
+    await api("/api/settings", { method: "POST", body: JSON.stringify({
+      onboarded: true,
+      enabled_categories: allSelected ? [] : cats,
+      dry_run: $("ob-dry-run").checked,
+      auto_mirror: $("ob-auto").checked,
+      per_trade_usd: +$("ob-per-trade").value,
+      daily_cap_usd: +$("ob-daily-cap").value,
+      min_score_to_mirror: +$("ob-score-floor").value,
+      max_slippage: +$("ob-slippage").value / 100,
+      stop_loss_pct: +$("ob-stop-pct").value,
+      max_hold_days: +$("ob-max-hold").value,
+      min_entry_price: +$("ob-min-entry").value / 100,
+      max_entry_price: +$("ob-max-entry").value / 100,
+      max_days_to_resolution: +$("ob-max-days").value,
+      refresh_minutes: +$("ob-refresh").value,
+      exit_with_whales: $("ob-exit-whales").checked,
+    })});
+    $("onboard").classList.add("hidden");
+    flash("ok", "Setup saved. Mirroring will follow these preferences.");
+    loadSettings();
+  } catch (e) { flash("err", e.message); }
+};
+
 /* ── Settings ──────────────────────────────────────────────────────── */
 async function loadSettings() {
   const data = await api("/api/settings");
@@ -493,6 +627,16 @@ async function loadSettings() {
   $("s-min-entry").value = Math.round(settings.min_entry_price * 100);
   $("s-max-entry").value = Math.round(settings.max_entry_price * 100);
   $("s-max-days").value = settings.max_days_to_resolution;
+  try {
+    const cats = await api("/api/categories");
+    allCategories = cats.categories;
+    renderCatChips("s-categories", allCategories, cats.enabled);
+  } catch (_) {}
+  const choices = data.category_choices || [];
+  const sel = settings.enabled_categories && settings.enabled_categories.length
+    ? settings.enabled_categories : choices;
+  renderCatChips("s-categories", choices, sel);
+  maybeOnboard(settings, choices);
   $("s-per-trade").value = settings.per_trade_usd;
   $("s-daily-cap").value = settings.daily_cap_usd;
   $("s-slippage").value = settings.max_slippage * 100;
@@ -526,6 +670,12 @@ $("save-settings").onclick = async () => {
       min_entry_price: +$("s-min-entry").value / 100,
       max_entry_price: +$("s-max-entry").value / 100,
       max_days_to_resolution: +$("s-max-days").value,
+      enabled_categories: readCatChips("s-categories", allCategories),
+      enabled_categories: (() => {
+        const on = readCatChips("s-categories");
+        const total = $("s-categories").querySelectorAll(".cat-chip").length;
+        return on.length === total ? [] : on;   // all selected == no restriction
+      })(),
       per_trade_usd: +$("s-per-trade").value,
       daily_cap_usd: +$("s-daily-cap").value,
       max_slippage: +$("s-slippage").value / 100,
@@ -567,6 +717,118 @@ $("clear-creds").onclick = async () => {
   flash("ok", "Credentials removed. Dry run re-enabled.");
   loadSettings();
 };
+
+/* ── Category chips ────────────────────────────────────────────────── */
+function renderCatChips(containerId, all, enabled) {
+  const on = new Set(enabled && enabled.length ? enabled : all);
+  $(containerId).innerHTML = all.map((c) =>
+    `<span class="cat-chip ${on.has(c) ? "on" : ""}" data-cat="${esc(c)}">${esc(c)}</span>`).join("");
+  $(containerId).querySelectorAll(".cat-chip").forEach((chip) => {
+    chip.onclick = () => chip.classList.toggle("on");
+  });
+}
+function readCatChips(containerId, all) {
+  const picked = [...$(containerId).querySelectorAll(".cat-chip.on")].map((c) => c.dataset.cat);
+  return picked.length === all.length ? [] : picked;   // all selected == no filter
+}
+
+/* ── First-run setup wizard ────────────────────────────────────────── */
+let allCategories = [];
+async function maybeShowSetup() {
+  const data = await api("/api/settings");
+  if (data.settings.setup_complete) return false;
+  const cats = await api("/api/categories");
+  allCategories = cats.categories;
+  renderCatChips("w-categories", allCategories, cats.enabled);
+  $("setup").classList.remove("hidden");
+  return true;
+}
+
+async function saveSetup(useDefaults) {
+  const patch = useDefaults ? { setup_complete: true } : {
+    setup_complete: true,
+    dry_run: $("w-dry-run").checked,
+    auto_mirror: $("w-auto-mirror").checked,
+    per_trade_usd: +$("w-per-trade").value,
+    daily_cap_usd: +$("w-daily-cap").value,
+    min_score_to_mirror: +$("w-score-floor").value,
+    max_slippage: +$("w-slippage").value / 100,
+    min_entry_price: +$("w-min-entry").value / 100,
+    max_entry_price: +$("w-max-entry").value / 100,
+    max_days_to_resolution: +$("w-max-days").value,
+    stop_loss_pct: +$("w-stop-pct").value,
+    enabled_categories: readCatChips("w-categories", allCategories),
+  };
+  await api("/api/settings", { method: "POST", body: JSON.stringify(patch) });
+  $("setup").classList.add("hidden");
+  loadSettings();
+}
+$("setup-save").onclick = () => saveSetup(false);
+$("setup-skip").onclick = () => saveSetup(true);
+
+/* ── Whale detail modal ────────────────────────────────────────────── */
+async function openWhale(address) {
+  try {
+    const w = await api(`/api/whales/${address}`);
+    const pct = (v) => (v == null ? "\u2014" : (v * 100).toFixed(0) + "%");
+    const sampleRows = (rows, emptyMsg) => rows.length ? rows.map((p) => `
+      <div class="sample-row">
+        <div>${esc(p.title)} <span class="meta">\u2192 ${esc(p.outcome)}</span>
+          <div class="meta">${esc(p.category || "Uncategorized")} \u00B7 $${p.usd.toFixed(0)} @ ${p.entry_price.toFixed(3)}
+            ${p.status !== "open" ? `\u00B7 ${esc(p.status)}${p.exit_reason ? " (" + esc(p.exit_reason) + ")" : ""}` : "\u00B7 open"}</div>
+        </div>
+        <div class="${pnlCls(p.pnl)}" style="white-space:nowrap">${money(p.pnl)}</div>
+      </div>`).join("") : `<p class="hint">${emptyMsg}</p>`;
+
+    $("whale-detail-body").innerHTML = `
+      <div class="whale-name">${esc(w.name)}</div>
+      <div class="whale-addr">${esc(w.address)}</div>
+      <div class="stat-cards">
+        <div class="stat-card"><label>Our P&L</label><b class="${pnlCls(w.pnl)}">${money(w.pnl)}</b></div>
+        <div class="stat-card"><label>ROI</label><b class="${pnlCls(w.roi)}">${(w.roi * 100).toFixed(1)}%</b></div>
+        <div class="stat-card"><label>Win rate</label><b>${pct(w.win_rate)}</b></div>
+        <div class="stat-card"><label>Co-signed</label><b>${w.positions}</b></div>
+        <div class="stat-card"><label>W / L / Open</label><b>${w.wins} / ${w.losses} / ${w.open_count}</b></div>
+        <div class="stat-card"><label>Invested</label><b>$${w.invested.toFixed(0)}</b></div>
+        <div class="stat-card"><label>Avg entry</label><b>${w.avg_entry.toFixed(3)}</b></div>
+      </div>
+
+      <div class="whale-sub">By category</div>
+      <table class="activity-table">
+        <thead><tr><th>Category</th><th class="num">Positions</th><th class="num">Invested</th>
+          <th class="num">P&L</th><th class="num">ROI</th><th class="num">W / L</th><th class="num">Open</th></tr></thead>
+        <tbody>${w.categories.map((c) => `
+          <tr><td>${esc(c.category)}</td><td class="num">${c.positions}</td>
+            <td class="num">$${c.invested.toFixed(0)}</td>
+            <td class="num ${pnlCls(c.pnl)}">${money(c.pnl)}</td>
+            <td class="num ${pnlCls(c.roi)}">${(c.roi * 100).toFixed(1)}%</td>
+            <td class="num">${c.wins} / ${c.losses}</td><td class="num">${c.open_count}</td></tr>`).join("")}</tbody>
+      </table>
+
+      <div class="whale-sub">Best results with them</div>
+      ${sampleRows(w.samples.best, "No settled positions yet.")}
+      <div class="whale-sub">Worst results with them</div>
+      ${sampleRows(w.samples.worst, "No settled positions yet.")}
+      <div class="whale-sub">Currently open together</div>
+      ${sampleRows(w.samples.open, "No open positions with this whale.")}
+
+      <div class="btn-row" style="margin-top:18px">
+        <button class="btn ${w.followed ? "" : "btn-mirror"}" id="whale-modal-follow"
+          data-addr="${esc(w.address)}" data-name="${esc(w.name)}">
+          ${w.followed ? "Unfollow" : "Follow"} ${esc(w.name)}</button>
+      </div>`;
+    $("whale-modal").classList.remove("hidden");
+    $("whale-modal-follow").onclick = async () => {
+      const b = $("whale-modal-follow");
+      if (b.textContent.trim().startsWith("Unfollow")) await api(`/api/whales/follow/${b.dataset.addr}`, { method: "DELETE" });
+      else await api("/api/whales/follow", { method: "POST", body: JSON.stringify({ address: b.dataset.addr, name: b.dataset.name }) });
+      openWhale(b.dataset.addr);
+      if (whaleData) loadWhales();
+    };
+  } catch (e) { flash("err", e.message); }
+}
+$("whale-close").onclick = () => $("whale-modal").classList.add("hidden");
+$("whale-modal").onclick = (e) => { if (e.target.id === "whale-modal") $("whale-modal").classList.add("hidden"); };
 
 /* ── UI state persistence ──────────────────────────────────────────── */
 let uiSaveTimer = null;
@@ -639,6 +901,7 @@ async function tick() {
 
 async function boot() {
   showApp();
+  try { await maybeShowSetup(); } catch (_) {}
   try {
     const { state } = await api("/api/ui-state");
     applyUIState(state);
