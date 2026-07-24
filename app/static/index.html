@@ -173,12 +173,14 @@
     <div class="wordmark">WHALE<span>MIRROR</span></div>
     <div class="status-strip">
       <span id="mode-badge" class="badge badge-dry">DRY RUN</span>
+      <span id="pause-badge" class="badge badge-paused hidden">PAUSED</span>
       <span class="stat"><label>Last sweep</label><b id="last-sweep">—</b></span>
       <span class="stat"><label>Signals</label><b id="signal-count">—</b></span>
       <span class="stat"><label>Spent today</label><b id="spent-today">$0</b></span>
       <span id="sonar" class="sonar" title="Engine status"></span>
     </div>
     <div class="header-actions">
+      <button id="pause-btn" class="btn">Pause mirroring</button>
       <button id="refresh-btn" class="btn">Run sweep</button>
       <button id="logout-btn" class="btn btn-ghost">Sign out</button>
     </div>
@@ -354,10 +356,6 @@
             <label>Categories to mirror</label>
             <div id="s-categories" class="cat-chips"></div>
             <span class="hint">None selected = all categories mirrored.</span>
-          </div>
-          <div class="field-row">
-            <label>Categories to mirror <span class="hint">None selected = all allowed</span></label>
-            <div id="s-categories" class="cat-chips"></div>
           </div>
           <span class="hint">0 = off for stop-loss, hold cap, and time horizon. Entry band and horizon gate both auto and manual mirrors — skips are logged to Activity.</span>
         </div>

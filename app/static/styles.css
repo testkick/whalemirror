@@ -383,3 +383,9 @@ footer {
 .sample-row .meta { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .whale-link { cursor: pointer; color: var(--ink); border-bottom: 1px dotted var(--muted); }
 .whale-link:hover { color: var(--sonar); border-bottom-color: var(--sonar); }
+
+.badge-paused { color: var(--coral); border: 1px solid var(--coral); }
+.badge-running { color: var(--kelp); border: 1px solid var(--kelp); }
+.btn-paused { border-color: var(--kelp); color: var(--kelp); }
+.cat-tag { font-family: var(--mono); font-size: 11px; color: var(--sonar);
+  border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; white-space: nowrap; }

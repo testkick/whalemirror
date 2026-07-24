@@ -224,6 +224,22 @@ async function pollSignals() {
   try { renderSignals(await api("/api/signals")); } catch (_) { /* login shown */ }
 }
 
+$("pause-btn").onclick = async () => {
+  const r = await api("/api/pause", { method: "POST" });
+  applyPauseState(r.mirroring_paused);
+  flash("ok", r.mirroring_paused
+    ? "Mirroring paused \u2014 sweeps keep running, no new positions will open."
+    : "Mirroring resumed.");
+};
+
+function applyPauseState(paused) {
+  if (settings) settings.mirroring_paused = paused;
+  const btn = $("pause-btn");
+  btn.textContent = paused ? "Resume mirroring" : "Pause mirroring";
+  btn.classList.toggle("btn-paused", paused);
+  $("pause-badge").classList.toggle("hidden", !paused);
+}
+
 $("refresh-btn").onclick = async () => {
   await api("/api/refresh", { method: "POST" });
   pollSignals();
@@ -559,59 +575,6 @@ $("wd-follow").onclick = async () => {
   loadWhales();
 };
 
-/* ── Category chips (settings + onboarding) ────────────────────────── */
-function renderCatChips(containerId, choices, selected) {
-  $(containerId).innerHTML = choices.map((c) =>
-    `<span class="cat-chip ${selected.includes(c) ? "on" : ""}" data-cat="${esc(c)}">${esc(c)}</span>`).join("");
-  $(containerId).querySelectorAll("[data-cat]").forEach((chip) => {
-    chip.onclick = () => chip.classList.toggle("on");
-  });
-}
-function readCatChips(containerId) {
-  return [...$(containerId).querySelectorAll(".cat-chip.on")].map((c) => c.dataset.cat);
-}
-
-/* ── First-run onboarding ──────────────────────────────────────────── */
-async function maybeOnboard(settings, choices) {
-  if (settings.onboarded) return;
-  renderCatChips("ob-categories", choices, choices);  // all on by default
-  $("ob-categories").querySelectorAll(".cat-chip").forEach((c) => c.classList.add("on"));
-  $("onboard").classList.remove("hidden");
-}
-$("ob-cat-all").onclick = () => $("ob-categories").querySelectorAll(".cat-chip").forEach((c) => c.classList.add("on"));
-$("ob-cat-none").onclick = () => $("ob-categories").querySelectorAll(".cat-chip").forEach((c) => c.classList.remove("on"));
-$("ob-skip").onclick = async () => {
-  await api("/api/settings", { method: "POST", body: JSON.stringify({ onboarded: true }) });
-  $("onboard").classList.add("hidden");
-  loadSettings();
-};
-$("ob-save").onclick = async () => {
-  const cats = readCatChips("ob-categories");
-  const allSelected = cats.length === $("ob-categories").querySelectorAll(".cat-chip").length;
-  try {
-    await api("/api/settings", { method: "POST", body: JSON.stringify({
-      onboarded: true,
-      enabled_categories: allSelected ? [] : cats,
-      dry_run: $("ob-dry-run").checked,
-      auto_mirror: $("ob-auto").checked,
-      per_trade_usd: +$("ob-per-trade").value,
-      daily_cap_usd: +$("ob-daily-cap").value,
-      min_score_to_mirror: +$("ob-score-floor").value,
-      max_slippage: +$("ob-slippage").value / 100,
-      stop_loss_pct: +$("ob-stop-pct").value,
-      max_hold_days: +$("ob-max-hold").value,
-      min_entry_price: +$("ob-min-entry").value / 100,
-      max_entry_price: +$("ob-max-entry").value / 100,
-      max_days_to_resolution: +$("ob-max-days").value,
-      refresh_minutes: +$("ob-refresh").value,
-      exit_with_whales: $("ob-exit-whales").checked,
-    })});
-    $("onboard").classList.add("hidden");
-    flash("ok", "Setup saved. Mirroring will follow these preferences.");
-    loadSettings();
-  } catch (e) { flash("err", e.message); }
-};
-
 /* ── Settings ──────────────────────────────────────────────────────── */
 async function loadSettings() {
   const data = await api("/api/settings");
@@ -632,11 +595,6 @@ async function loadSettings() {
     allCategories = cats.categories;
     renderCatChips("s-categories", allCategories, cats.enabled);
   } catch (_) {}
-  const choices = data.category_choices || [];
-  const sel = settings.enabled_categories && settings.enabled_categories.length
-    ? settings.enabled_categories : choices;
-  renderCatChips("s-categories", choices, sel);
-  maybeOnboard(settings, choices);
   $("s-per-trade").value = settings.per_trade_usd;
   $("s-daily-cap").value = settings.daily_cap_usd;
   $("s-slippage").value = settings.max_slippage * 100;
@@ -649,6 +607,7 @@ async function loadSettings() {
   const badge = $("mode-badge");
   badge.textContent = settings.dry_run ? "DRY RUN" : "LIVE";
   badge.className = "badge " + (settings.dry_run ? "badge-dry" : "badge-live");
+  applyPauseState(!!settings.mirroring_paused);
 
   const c = data.credentials;
   $("creds-status").textContent = c.configured
@@ -671,11 +630,6 @@ $("save-settings").onclick = async () => {
       max_entry_price: +$("s-max-entry").value / 100,
       max_days_to_resolution: +$("s-max-days").value,
       enabled_categories: readCatChips("s-categories", allCategories),
-      enabled_categories: (() => {
-        const on = readCatChips("s-categories");
-        const total = $("s-categories").querySelectorAll(".cat-chip").length;
-        return on.length === total ? [] : on;   // all selected == no restriction
-      })(),
       per_trade_usd: +$("s-per-trade").value,
       daily_cap_usd: +$("s-daily-cap").value,
       max_slippage: +$("s-slippage").value / 100,
@@ -885,6 +839,7 @@ async function refreshHeader() {
     const badge = $("mode-badge");
     badge.textContent = settings.dry_run ? "DRY RUN" : "LIVE";
     badge.className = "badge " + (settings.dry_run ? "badge-dry" : "badge-live");
+    applyPauseState(!!settings.mirroring_paused);
   } catch (_) {}
 }
 
