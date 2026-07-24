@@ -233,6 +233,14 @@ async def post_ui_state(request: Request):
     return {"ok": True}
 
 
+@app.post("/api/pause")
+def toggle_pause(request: Request):
+    require_session(request)
+    paused = not store.get_settings().get("mirroring_paused")
+    store.save_settings({"mirroring_paused": paused})
+    return {"mirroring_paused": paused}
+
+
 @app.get("/api/categories")
 def categories(request: Request):
     require_session(request)

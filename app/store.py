@@ -157,6 +157,7 @@ SETTINGS_DEFAULTS = {
     "max_hold_days": 0,            # auto-close positions held longer (0 = off)
     "enabled_categories": [],      # [] = all categories allowed
     "setup_complete": False,       # first-run wizard gate
+    "mirroring_paused": False,     # master switch: blocks all mirroring
     "enabled_categories": [],      # [] = all categories allowed
     "onboarded": False,            # first-run setup completed
     "min_score_to_mirror": 8.0,
@@ -326,10 +327,23 @@ CATEGORY_KEYWORDS = [
 ]
 
 
+def known_category_labels() -> set[str]:
+    return {label for label, _ in CATEGORY_KEYWORDS}
+
+
 def classify_category(title: str, given: str | None = None) -> str:
-    """Prefer an explicit category; else infer from title keywords."""
-    if given and given.strip() and given.strip().lower() != "uncategorized":
-        return given.strip()
+    """Infer the market category from the title.
+
+    `given` is only trusted when it matches a KNOWN category label. Upstream
+    enrichment has been observed passing the market OUTCOME (e.g. 'Winthrop
+    University', 'Atlanta Braves') as the category, which is not a category at
+    all — anything unrecognized is ignored and the title is classified instead.
+    """
+    if given and given.strip():
+        g = given.strip()
+        for label in known_category_labels():
+            if g.lower() == label.lower():
+                return label
     t = (title or "").lower()
     import re
     # Structural patterns first — they are more specific than generic keywords.
@@ -354,15 +368,19 @@ CATEGORY_CHOICES = ["Sports", "Soccer", "Tennis", "Esports", "Politics",
 
 
 def backfill_categories() -> int:
-    """One-time: classify existing positions that have no category."""
+    """Classify positions with a missing OR invalid category. Invalid means a
+    value that isn't a known label — e.g. an outcome name written in by a
+    previous enrichment bug."""
+    valid = known_category_labels() | {"Uncategorized"}
     with db() as conn:
-        rows = conn.execute(
-            "SELECT id, title, category FROM positions "
-            "WHERE category IS NULL OR category='' OR category='Uncategorized'").fetchall()
+        rows = conn.execute("SELECT id, title, category FROM positions").fetchall()
         n = 0
         for r in rows:
+            cur = (r["category"] or "").strip()
+            if cur in valid and cur != "Uncategorized":
+                continue  # already good
             cat = classify_category(r["title"], None)
-            if cat != "Uncategorized":
+            if cat != cur:
                 conn.execute("UPDATE positions SET category=? WHERE id=?", (cat, r["id"]))
                 n += 1
     return n

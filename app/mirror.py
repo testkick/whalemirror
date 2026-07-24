@@ -92,6 +92,8 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
     # Guardrails ----------------------------------------------------------
     if usd <= 0 or usd > settings["per_trade_usd"] * 4:
         return fail("skipped", f"size {usd} outside sane bounds")
+    if settings.get("mirroring_paused"):
+        return fail("skipped", "mirroring is paused")
     price_now = signal["current_price"]
     lo, hi = settings["min_entry_price"], settings["max_entry_price"]
     if not (lo <= price_now <= hi):
@@ -161,6 +163,8 @@ def auto_mirror_pass(signals: list[dict]) -> list[dict]:
     settings = store.get_settings()
     if not settings.get("setup_complete"):
         return []   # first-run: nothing mirrors until preferences are confirmed
+    if settings.get("mirroring_paused"):
+        return []   # master pause
     if not settings["auto_mirror"]:
         return []
     already = store.mirrored_signal_ids()
