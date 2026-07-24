@@ -133,7 +133,14 @@ function renderSignals(data) {
   const sonar = $("sonar");
   sonar.className = "sonar" + (data.refreshing ? " busy" : data.last_error ? " error" : "");
   $("progress").classList.toggle("hidden", !data.refreshing);
-  $("progress").textContent = data.progress || "Sweeping\u2026";
+  if (data.refreshing) {
+    const mins = Math.floor((data.sweep_elapsed || 0) / 60);
+    const secs = (data.sweep_elapsed || 0) % 60;
+    const elapsed = mins ? `${mins}m ${secs}s` : `${secs}s`;
+    $("progress").textContent = (data.progress || "Sweeping\u2026") + `  \u00B7  ${elapsed}`
+      + (data.sweep_stale ? "  \u00B7  STALLED \u2014 will reset automatically, or press Run sweep" : "");
+    $("progress").classList.toggle("stalled", !!data.sweep_stale);
+  }
 
   const banner = $("banner");
   if (data.last_error) {

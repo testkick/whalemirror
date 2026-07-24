@@ -389,3 +389,5 @@ footer {
 .btn-paused { border-color: var(--kelp); color: var(--kelp); }
 .cat-tag { font-family: var(--mono); font-size: 11px; color: var(--sonar);
   border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; white-space: nowrap; }
+
+.progress.stalled { color: var(--coral); }
