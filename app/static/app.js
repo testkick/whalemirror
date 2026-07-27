@@ -252,6 +252,19 @@ $("refresh-btn").onclick = async () => {
   pollSignals();
 };
 
+$("track-btn").onclick = async () => {
+  const btn = $("track-btn");
+  btn.disabled = true; btn.textContent = "Updating\u2026";
+  try {
+    const r = await api("/api/track", { method: "POST" });
+    flash(r.ok ? "ok" : "err", r.ok
+      ? `Bets updated \u2014 ${r.updated} repriced, ${r.closed} closed.`
+      : r.detail);
+    if (tabVisible("performance")) loadPerformance();
+  } catch (e) { flash("err", e.message); }
+  btn.disabled = false; btn.textContent = "Update bets";
+};
+
 /* ── Activity ──────────────────────────────────────────────────────── */
 async function loadActivity() {
   const { mirrors } = await api("/api/activity");

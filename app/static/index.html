@@ -181,6 +181,7 @@
     </div>
     <div class="header-actions">
       <button id="pause-btn" class="btn">Pause mirroring</button>
+      <button id="track-btn" class="btn">Update bets</button>
       <button id="refresh-btn" class="btn">Run sweep</button>
       <button id="logout-btn" class="btn btn-ghost">Sign out</button>
     </div>
@@ -304,7 +305,8 @@
       <div class="settings-grid">
 
         <div class="card">
-          <h2>Execution</h2>
+          <h2>Strategy</h2>
+          <p class="hint">Modes &amp; behaviours — what the system does.</p>
           <div class="field-row">
             <label class="switch-label">
               <input type="checkbox" id="s-dry-run"> Dry run
@@ -313,16 +315,32 @@
           </div>
           <div class="field-row">
             <label class="switch-label">
-              <input type="checkbox" id="s-auto-mirror"> Auto-mirror new signals
+              <input type="checkbox" id="s-auto-mirror"> Auto-mirror consensus signals
               <span class="hint">Each sweep mirrors new signals above the score floor, once each.</span>
             </label>
           </div>
           <div class="field-row">
             <label class="switch-label">
-              <input type="checkbox" id="s-auto-followed"> Auto-mirror followed-whale solo signals
+              <input type="checkbox" id="s-auto-followed"> Auto-mirror followed-whale solo bets
               <span class="hint">Off by default — one wallet's conviction is a weaker prior than consensus.</span>
             </label>
           </div>
+          <div class="field-row">
+            <label class="switch-label">
+              <input type="checkbox" id="s-exit-whales"> Exit with the whales
+              <span class="hint">Sell when a signal disappears from 2 consecutive sweeps — the consensus behind it unwound.</span>
+            </label>
+          </div>
+          <div class="field-row">
+            <label>Categories to mirror</label>
+            <div id="s-categories" class="cat-chips"></div>
+            <span class="hint">None selected = all categories mirrored.</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Fine-tuning</h2>
+          <p class="hint">Numeric gates &amp; sizing. 0 = off for stop-loss, hold cap, and time horizon.</p>
           <div class="field-pair">
             <label>Per-trade size (USD)<input type="number" id="s-per-trade" min="1" step="1"></label>
             <label>Daily cap (USD)<input type="number" id="s-daily-cap" min="1" step="1"></label>
@@ -331,12 +349,7 @@
             <label>Max slippage (¢)<input type="number" id="s-slippage" min="0" max="25" step="0.5"></label>
             <label>Score floor for auto<input type="number" id="s-score-floor" min="0" step="0.5"></label>
           </div>
-          <div class="field-row">
-            <label class="switch-label">
-              <input type="checkbox" id="s-exit-whales"> Exit with the whales
-              <span class="hint">Sell a position when its signal disappears from 2 consecutive sweeps — the consensus behind it unwound.</span>
-            </label>
-          </div>
+          <div class="settings-subhead">Exit levels</div>
           <div class="field-pair">
             <label>Default stop: entry − (¢)<input type="number" id="s-floor-off" min="0" max="50" step="1"></label>
             <label>Default take-profit: entry + (¢)<input type="number" id="s-ceiling-off" min="0" max="50" step="1"></label>
@@ -345,6 +358,7 @@
             <label>Stop-loss (% from entry)<input type="number" id="s-stop-pct" min="0" max="95" step="5"></label>
             <label>Max hold (days)<input type="number" id="s-max-hold" min="0" step="1"></label>
           </div>
+          <div class="settings-subhead">Entry gates</div>
           <div class="field-pair">
             <label>Min entry price (¢)<input type="number" id="s-min-entry" min="0" max="99" step="1"></label>
             <label>Max entry price (¢)<input type="number" id="s-max-entry" min="1" max="100" step="1"></label>
@@ -352,12 +366,7 @@
           <div class="field-pair">
             <label>Time horizon: max days to resolution<input type="number" id="s-max-days" min="0" step="1"></label>
           </div>
-          <div class="field-row">
-            <label>Categories to mirror</label>
-            <div id="s-categories" class="cat-chips"></div>
-            <span class="hint">None selected = all categories mirrored.</span>
-          </div>
-          <span class="hint">0 = off for stop-loss, hold cap, and time horizon. Entry band and horizon gate both auto and manual mirrors — skips are logged to Activity.</span>
+          <span class="hint">Entry band and horizon gate both auto and manual mirrors — skips are logged to Activity.</span>
         </div>
 
         <div class="card">

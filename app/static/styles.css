@@ -391,3 +391,7 @@ footer {
   border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; white-space: nowrap; }
 
 .progress.stalled { color: var(--coral); }
+
+.settings-subhead { font-family: var(--display); font-size: 12px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--muted); margin: 14px 0 2px; padding-top: 10px;
+  border-top: 1px solid var(--line); }
