@@ -27,10 +27,13 @@ app = FastAPI(title="WhaleMirror", docs_url=None, redoc_url=None)
 # Secure cookies by default (Railway/any HTTPS proxy). Set COOKIE_SECURE=false
 # only for plain-HTTP local dev or SSH-tunnel access.
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() != "false"
+DATA_API_TOKEN = os.environ.get("DATA_API_TOKEN")  # optional bearer for /api/data/*
 _state = {"refreshing": False, "progress": "", "last_error": None, "auto_results": [],
           "started_at": 0.0, "progress_at": 0.0}
 SWEEP_MAX_SECS = 900        # a sweep may never occupy the slot longer than this
 PROGRESS_STALL_SECS = 300   # no progress update for this long == stalled
+TRACK_INTERVAL_SECS = 60    # re-price open positions every minute (fast exits)
+_tracking = {"busy": False}  # guard so a slow tracking pass can't stack up
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────
@@ -38,6 +41,19 @@ def require_session(request: Request):
     token = request.cookies.get("wm_session", "")
     if not store.session_valid(token):
         raise HTTPException(status_code=401, detail="Not signed in")
+
+
+def require_data_access(request: Request):
+    """Data API: allow a valid session OR a matching bearer token so an
+    external engine can read without a browser login."""
+    if store.session_valid(request.cookies.get("wm_session", "")):
+        return
+    if DATA_API_TOKEN:
+        auth = request.headers.get("authorization", "")
+        tok = auth[7:] if auth.lower().startswith("bearer ") else request.query_params.get("token", "")
+        if hmac.compare_digest(tok, DATA_API_TOKEN):
+            return
+    raise HTTPException(status_code=401, detail="Data API requires a valid session or bearer token")
 
 
 class LoginBody(BaseModel):
@@ -257,6 +273,61 @@ def categories(request: Request):
             "enabled": store.get_settings().get("enabled_categories") or []}
 
 
+@app.post("/api/track")
+async def track_now(request: Request):
+    require_session(request)
+    if _tracking["busy"]:
+        return {"ok": False, "detail": "Tracking already running"}
+    _tracking["busy"] = True
+    try:
+        result = await asyncio.to_thread(tracker.refresh_positions)
+    finally:
+        _tracking["busy"] = False
+    return {"ok": True, **result}
+
+
+@app.get("/api/data/overview")
+def data_overview(request: Request):
+    require_data_access(request)
+    return store.api_overview()
+
+
+@app.get("/api/data/tables")
+def data_tables(request: Request):
+    require_data_access(request)
+    return {"tables": store.QUERYABLE_TABLES}
+
+
+@app.get("/api/data/table/{table}")
+def data_table(table: str, request: Request,
+               limit: int = 500, offset: int = 0,
+               status: str | None = None, mode: str | None = None,
+               category: str | None = None,
+               order_by: str = "id", order_dir: str = "desc"):
+    require_data_access(request)
+    try:
+        return store.query_table(table, limit=limit, offset=offset,
+                                 where_status=status, where_mode=mode,
+                                 where_category=category,
+                                 order_by=order_by, order_dir=order_dir)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class QueryBody(BaseModel):
+    sql: str
+    params: list | None = None
+
+
+@app.post("/api/data/query")
+def data_query(body: QueryBody, request: Request):
+    require_data_access(request)
+    try:
+        return store.query_custom(body.sql, body.params)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.get("/api/activity")
 def activity(request: Request):
     require_session(request)
@@ -305,13 +376,20 @@ async def scheduler():
                 await asyncio.to_thread(store.housekeeping)
             except Exception:  # noqa: BLE001
                 pass
-        if time.time() - last_track > 300:
+        # Position tracking runs on its OWN fast cadence, independent of the
+        # 15-minute whale sweep, so P&L stays fresh and floor/ceiling/stop-loss
+        # exits fire within a minute instead of waiting on a sweep.
+        if (time.time() - last_track > TRACK_INTERVAL_SECS
+                and not _tracking["busy"] and not _state["refreshing"]):
             last_track = time.time()
+            _tracking["busy"] = True
             try:
                 await asyncio.to_thread(tracker.refresh_positions)
             except Exception:  # noqa: BLE001 — tracking must never kill the loop
                 pass
-        await asyncio.sleep(60)
+            finally:
+                _tracking["busy"] = False
+        await asyncio.sleep(15)   # loop tick (was 60); tracking gate controls actual cadence
 
 
 @app.on_event("startup")

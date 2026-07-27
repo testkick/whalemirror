@@ -514,7 +514,7 @@ def performance_summary() -> dict:
             closed = conn.execute(
                 "SELECT COALESCE(SUM(pnl),0) r, "
                 "SUM(CASE WHEN status='won' OR (status='sold' AND pnl>0) THEN 1 ELSE 0 END) w, "
-                "SUM(CASE WHEN status='lost' OR (status='sold' AND pnl<=0) THEN 1 ELSE 0 END) l "
+                "SUM(CASE WHEN status='lost' OR (status='sold' AND pnl<0) THEN 1 ELSE 0 END) l "
                 "FROM positions WHERE status!='open' AND mode=?", (mode,)).fetchone()
             wins, losses = closed["w"] or 0, closed["l"] or 0
             closed_cost = conn.execute(
@@ -524,7 +524,7 @@ def performance_summary() -> dict:
             d24 = conn.execute(
                 "SELECT COALESCE(SUM(pnl),0) r, "
                 "SUM(CASE WHEN status='won' OR (status='sold' AND pnl>0) THEN 1 ELSE 0 END) w, "
-                "SUM(CASE WHEN status='lost' OR (status='sold' AND pnl<=0) THEN 1 ELSE 0 END) l "
+                "SUM(CASE WHEN status='lost' OR (status='sold' AND pnl<0) THEN 1 ELSE 0 END) l "
                 "FROM positions WHERE status!='open' AND mode=? AND closed_ts >= ?",
                 (mode, day_ago)).fetchone()
             opened_24h = conn.execute(
@@ -787,7 +787,7 @@ def category_breakdown() -> list[dict]:
                    COALESCE(SUM(usd), 0) AS invested,
                    COALESCE(SUM(pnl), 0) AS pnl,
                    SUM(CASE WHEN status='won' OR (status='sold' AND pnl>0) THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN status='lost' OR (status='sold' AND pnl<=0) THEN 1 ELSE 0 END) AS losses
+                   SUM(CASE WHEN status='lost' OR (status='sold' AND pnl<0) THEN 1 ELSE 0 END) AS losses
             FROM positions GROUP BY COALESCE(category, 'Uncategorized')
             ORDER BY pnl DESC
         """).fetchall()
@@ -808,7 +808,7 @@ def whale_leaderboard() -> list[dict]:
                    COALESCE(SUM(p.usd), 0) AS invested,
                    COALESCE(SUM(p.pnl), 0) AS pnl,
                    SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<=0) THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<0) THEN 1 ELSE 0 END) AS losses,
                    SUM(CASE WHEN p.status='open' THEN 1 ELSE 0 END) AS open_count,
                    MAX(p.ts) AS last_seen
             FROM position_whales pw JOIN positions p ON p.id = pw.position_id
@@ -848,7 +848,7 @@ def whale_detail(address: str) -> dict:
             SELECT MAX(pw.name) AS name, COUNT(*) AS positions,
                    COALESCE(SUM(p.usd),0) AS invested, COALESCE(SUM(p.pnl),0) AS pnl,
                    SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<=0) THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<0) THEN 1 ELSE 0 END) AS losses,
                    SUM(CASE WHEN p.status='open' THEN 1 ELSE 0 END) AS open_count,
                    COALESCE(SUM(CASE WHEN p.status='open' THEN p.pnl ELSE 0 END),0) AS unrealized,
                    COALESCE(SUM(CASE WHEN p.status!='open' THEN p.pnl ELSE 0 END),0) AS realized,
@@ -862,7 +862,7 @@ def whale_detail(address: str) -> dict:
                    COUNT(*) AS positions, COALESCE(SUM(p.usd),0) AS invested,
                    COALESCE(SUM(p.pnl),0) AS pnl,
                    SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<=0) THEN 1 ELSE 0 END) AS losses
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<0) THEN 1 ELSE 0 END) AS losses
             FROM position_whales pw JOIN positions p ON p.id = pw.position_id
             WHERE pw.address = ? GROUP BY 1 ORDER BY pnl DESC
         """, (address,)).fetchall()
@@ -909,7 +909,7 @@ def whale_detail(address: str) -> dict:
                    COALESCE(SUM(p.usd),0) AS invested,
                    COALESCE(SUM(p.pnl),0) AS pnl,
                    SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<=0) THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<0) THEN 1 ELSE 0 END) AS losses,
                    SUM(CASE WHEN p.status='open' THEN 1 ELSE 0 END) AS open_count,
                    MIN(p.ts) AS first_seen, MAX(p.ts) AS last_seen,
                    COALESCE(AVG(p.entry_price),0) AS avg_entry
@@ -923,7 +923,7 @@ def whale_detail(address: str) -> dict:
                    COALESCE(SUM(p.usd),0) AS invested,
                    COALESCE(SUM(p.pnl),0) AS pnl,
                    SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<=0) THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<0) THEN 1 ELSE 0 END) AS losses,
                    SUM(CASE WHEN p.status='open' THEN 1 ELSE 0 END) AS open_count
             FROM position_whales pw JOIN positions p ON p.id = pw.position_id
             WHERE pw.address = ?
@@ -968,3 +968,87 @@ def whale_detail(address: str) -> dict:
         "categories": cat_rows,
         "samples": {"open": open_positions, "best": best, "worst": worst},
     }
+
+
+# ── Read-only data API (for external engines) ─────────────────────────────
+# Whitelisted tables + a guarded read-only executor. Nothing here can write.
+QUERYABLE_TABLES = {
+    "positions": ["id", "ts", "signal_id", "title", "outcome", "category",
+                  "condition_id", "outcome_index", "mode", "usd", "entry_price",
+                  "shares", "status", "last_price", "pnl", "closed_ts",
+                  "floor", "ceiling", "exit_reason", "event_key"],
+    "mirrors": ["id", "ts", "signal_id", "title", "outcome", "usd", "price",
+                "mode", "status", "detail", "side"],
+    "signals": ["id", "payload", "first_seen", "last_seen"],
+    "wallets": ["address", "name", "source", "realized", "volume", "roi",
+                "win_rate", "trades", "weight", "qualified", "last_scored"],
+    "pnl_snapshots": ["ts", "mode", "cost", "value", "realized"],
+    "position_whales": ["position_id", "address", "name"],
+    "followed_whales": ["address", "name", "added"],
+}
+
+
+def query_table(table: str, limit: int = 500, offset: int = 0,
+                where_status: str | None = None, where_mode: str | None = None,
+                where_category: str | None = None, order_by: str = "id",
+                order_dir: str = "desc") -> dict:
+    """Safe parameterized read of a whitelisted table. No arbitrary SQL."""
+    if table not in QUERYABLE_TABLES:
+        raise ValueError(f"unknown table '{table}'")
+    cols = QUERYABLE_TABLES[table]
+    order_by = order_by if order_by in cols else cols[0]
+    order_dir = "ASC" if str(order_dir).lower() == "asc" else "DESC"
+    limit = max(1, min(int(limit), 5000))
+    offset = max(0, int(offset))
+
+    clauses, args = [], []
+    if where_status and "status" in cols:
+        clauses.append("status = ?"); args.append(where_status)
+    if where_mode and "mode" in cols:
+        clauses.append("mode = ?"); args.append(where_mode)
+    if where_category and "category" in cols:
+        clauses.append("category = ?"); args.append(where_category)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    with db() as conn:
+        total = conn.execute(f"SELECT COUNT(*) c FROM {table}{where}", args).fetchone()["c"]
+        rows = conn.execute(
+            f"SELECT {', '.join(cols)} FROM {table}{where} "
+            f"ORDER BY {order_by} {order_dir} LIMIT ? OFFSET ?",
+            args + [limit, offset]).fetchall()
+    return {"table": table, "total": total, "count": len(rows),
+            "limit": limit, "offset": offset, "rows": [dict(r) for r in rows]}
+
+
+def query_custom(sql: str, params: list | None = None) -> dict:
+    """Execute a caller-supplied SELECT, read-only. Rejects anything that
+    isn't a single SELECT or that touches write keywords."""
+    s = sql.strip().rstrip(";")
+    low = s.lower()
+    if not low.startswith("select"):
+        raise ValueError("only SELECT statements are allowed")
+    if ";" in s:
+        raise ValueError("multiple statements are not allowed")
+    forbidden = ("insert", "update", "delete", "drop", "alter", "create",
+                 "replace", "attach", "pragma", "vacuum", "reindex", " into ")
+    if any(f in low for f in forbidden):
+        raise ValueError("write/DDL keywords are not allowed")
+    with db() as conn:
+        conn.execute("PRAGMA query_only = ON")
+        try:
+            rows = conn.execute(s, params or []).fetchall()
+        except sqlite3.Error as e:
+            raise ValueError(f"query error: {e}")
+    rows = rows[:5000]
+    return {"count": len(rows), "rows": [dict(r) for r in rows]}
+
+
+def api_overview() -> dict:
+    """Compact snapshot for an external engine: headline perf + counts."""
+    summary = performance_summary()
+    with db() as conn:
+        counts = {t: conn.execute(f"SELECT COUNT(*) c FROM {t}").fetchone()["c"]
+                  for t in QUERYABLE_TABLES}
+    return {"generated_at": time.time(), "summary": summary,
+            "categories": category_breakdown(), "counts": counts,
+            "last_refresh": last_refresh()}
