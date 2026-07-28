@@ -43,20 +43,22 @@ _client_cache: dict[str, object] = {}
 
 
 def resolve_token_id(condition_id: str, outcome_index: int) -> tuple[str | None, float | None]:
-    """Look up the ERC-1155 token id and current midpoint for an outcome."""
+    """Resolve the ERC-1155 token id for an outcome (from the static /markets
+    listing) and its LIVE price. The token id is stable; the price comes from
+    the live feed, NOT the stale `price` field on /markets."""
     try:
-        r = requests.get(f"{CLOB_API}/markets/{condition_id}", timeout=15)
+        r = requests.get(f"{CLOB_API}/markets/{condition_id}", timeout=10)
         r.raise_for_status()
         market = r.json()
         tokens = market.get("tokens") or []
         if outcome_index is None or outcome_index >= len(tokens):
             return None, None
-        token = tokens[outcome_index]
-        token_id = token.get("token_id")
-        price = token.get("price")
-        return token_id, (float(price) if price is not None else None)
+        token_id = tokens[outcome_index].get("token_id")
     except requests.RequestException:
         return None, None
+    # Live mark from the tracker's pricing (midpoint w/ spread-aware fallback).
+    from .tracker import live_price
+    return token_id, live_price(token_id)
 
 
 def _get_client():
@@ -186,9 +188,17 @@ def execute_sell(pos: dict, reason: str = "manual") -> dict:
     mode = pos["mode"]
     pseudo_signal = {"id": pos["signal_id"], "title": pos["title"], "outcome": pos["outcome"]}
 
-    live_price, _ = None, None
-    token_id, live_price = resolve_token_id(pos["condition_id"], pos["outcome_index"])
-    price = live_price if live_price is not None else (pos.get("last_price") or pos["entry_price"])
+    from .tracker import sell_quote, live_price as _live
+    token_id = pos.get("token_id")
+    if not token_id:
+        token_id, _ = resolve_token_id(pos["condition_id"], pos["outcome_index"])
+    # A market SELL fills at the bid; use the sell-side quote for an honest exit
+    # price, falling back to live mid, then the last tracked mark.
+    price = sell_quote(token_id) if token_id else None
+    if price is None:
+        price = _live(token_id) if token_id else None
+    if price is None:
+        price = pos.get("last_price") or pos["entry_price"]
     proceeds = pos["shares"] * price
     pnl = round(proceeds - pos["usd"], 2)
 

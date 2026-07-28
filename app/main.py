@@ -32,7 +32,7 @@ _state = {"refreshing": False, "progress": "", "last_error": None, "auto_results
           "started_at": 0.0, "progress_at": 0.0}
 SWEEP_MAX_SECS = 900        # a sweep may never occupy the slot longer than this
 PROGRESS_STALL_SECS = 300   # no progress update for this long == stalled
-TRACK_INTERVAL_SECS = 60    # re-price open positions every minute (fast exits)
+TRACK_INTERVAL_SECS = 15    # re-price open positions every 15s (fast exits)
 _tracking = {"busy": False}  # guard so a slow tracking pass can't stack up
 
 
@@ -389,7 +389,7 @@ async def scheduler():
                 pass
             finally:
                 _tracking["busy"] = False
-        await asyncio.sleep(15)   # loop tick (was 60); tracking gate controls actual cadence
+        await asyncio.sleep(5)    # loop tick; tracking gate (15s) controls actual cadence
 
 
 @app.on_event("startup")
