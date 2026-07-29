@@ -633,6 +633,7 @@ async function loadSettings() {
   $("s-daily-cap").value = settings.daily_cap_usd;
   $("s-slippage").value = settings.max_slippage * 100;
   $("s-score-floor").value = settings.min_score_to_mirror;
+  $("s-score-followed").value = settings.min_score_followed;
   $("s-min-whales").value = settings.min_whales;
   $("s-dominance").value = settings.dominance;
   $("s-refresh").value = settings.refresh_minutes;
@@ -668,6 +669,7 @@ $("save-settings").onclick = async () => {
       daily_cap_usd: +$("s-daily-cap").value,
       max_slippage: +$("s-slippage").value / 100,
       min_score_to_mirror: +$("s-score-floor").value,
+      min_score_followed: +$("s-score-followed").value,
       min_whales: +$("s-min-whales").value,
       dominance: +$("s-dominance").value,
       refresh_minutes: +$("s-refresh").value,
