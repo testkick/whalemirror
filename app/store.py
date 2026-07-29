@@ -161,6 +161,7 @@ SETTINGS_DEFAULTS = {
     "enabled_categories": [],      # [] = all categories allowed
     "onboarded": False,            # first-run setup completed
     "min_score_to_mirror": 8.0,
+    "min_score_followed": 0.0,     # separate (lower) floor for followed-whale solo bets
     "refresh_minutes": 15,
     # engine knobs surfaced in the UI
     "min_whales": 3,

@@ -167,17 +167,31 @@ def auto_mirror_pass(signals: list[dict]) -> list[dict]:
         return []   # first-run: nothing mirrors until preferences are confirmed
     if settings.get("mirroring_paused"):
         return []   # master pause
-    if not settings["auto_mirror"]:
+
+    auto_consensus = bool(settings.get("auto_mirror"))
+    auto_followed = bool(settings.get("auto_mirror_followed"))
+    # Independent switches: either mode can run without the other. If BOTH are
+    # off, there is nothing to auto-mirror.
+    if not auto_consensus and not auto_followed:
         return []
+
     already = store.mirrored_signal_ids()
     results = []
     for s in signals:
         if s["id"] in already:
             continue
-        if s.get("signal_type") == "followed" and not settings.get("auto_mirror_followed"):
-            continue
-        if s["score"] < settings["min_score_to_mirror"]:
-            continue
+        is_followed = s.get("signal_type") == "followed"
+        # Route each signal to its own switch + its own score floor.
+        if is_followed:
+            if not auto_followed:
+                continue
+            if s["score"] < settings.get("min_score_followed", 0.0):
+                continue
+        else:
+            if not auto_consensus:
+                continue
+            if s["score"] < settings["min_score_to_mirror"]:
+                continue
         results.append({"signal": s["title"], **execute_mirror(s)})
     return results
 
