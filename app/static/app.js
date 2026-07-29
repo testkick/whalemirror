@@ -341,32 +341,42 @@ async function loadPerformance() {
   }));
   const dry = mkSeries(data.snapshots.dry_run), live = mkSeries(data.snapshots.live);
   if (chartsVisible) {
-  const labels = (dry.length >= live.length ? dry : live).map((p) => p.x);
-  if (pnlChart) pnlChart.destroy();
-  pnlChart = new Chart($("pnl-chart"), {
-    type: "line",
-    data: { labels, datasets: [
-      { label: "Dry run", data: dry.map((p) => p.y), borderColor: C("--amber"), backgroundColor: "transparent", tension: 0.25, pointRadius: 0 },
-      { label: "Live", data: live.map((p) => p.y), borderColor: C("--sonar"), backgroundColor: "transparent", tension: 0.25, pointRadius: 0 },
-    ]},
-    options: chartOpts(),
-  });
+    const labels = (dry.length >= live.length ? dry : live).map((p) => p.x);
+    // Update in place when the chart already exists (cheap, visibly extends the
+    // line, no re-animation). Only build from scratch the first time.
+    if (pnlChart) {
+      pnlChart.data.labels = labels;
+      pnlChart.data.datasets[0].data = dry.map((p) => p.y);
+      pnlChart.data.datasets[1].data = live.map((p) => p.y);
+      pnlChart.update("none");   // "none" = no animation, instant repaint
+    } else {
+      pnlChart = new Chart($("pnl-chart"), {
+        type: "line",
+        data: { labels, datasets: [
+          { label: "Dry run", data: dry.map((p) => p.y), borderColor: C("--amber"), backgroundColor: "transparent", tension: 0.25, pointRadius: 0 },
+          { label: "Live", data: live.map((p) => p.y), borderColor: C("--sonar"), backgroundColor: "transparent", tension: 0.25, pointRadius: 0 },
+        ]},
+        options: chartOpts(),
+      });
+    }
 
-  // Per-position P&L bars, green/red
-  const pos = [...data.positions].sort((a, b) => a.ts - b.ts);
-  if (posChart) posChart.destroy();
-  posChart = new Chart($("pos-chart"), {
-    type: "bar",
-    data: {
-      labels: pos.map((p) => p.title.slice(0, 28) + (p.title.length > 28 ? "…" : "")),
-      datasets: [{
-        label: "P&L (USD)",
-        data: pos.map((p) => p.pnl),
-        backgroundColor: pos.map((p) => p.pnl >= 0 ? C("--kelp") : C("--coral")),
-      }],
-    },
-    options: chartOpts(false),
-  });
+    // Per-position P&L bars, green/red — also in place
+    const pos = [...data.positions].sort((a, b) => a.ts - b.ts);
+    const posLabels = pos.map((p) => p.title.slice(0, 28) + (p.title.length > 28 ? "…" : ""));
+    const posData = pos.map((p) => p.pnl);
+    const posColors = pos.map((p) => p.pnl >= 0 ? C("--kelp") : C("--coral"));
+    if (posChart) {
+      posChart.data.labels = posLabels;
+      posChart.data.datasets[0].data = posData;
+      posChart.data.datasets[0].backgroundColor = posColors;
+      posChart.update("none");
+    } else {
+      posChart = new Chart($("pos-chart"), {
+        type: "bar",
+        data: { labels: posLabels, datasets: [{ label: "P&L (USD)", data: posData, backgroundColor: posColors }] },
+        options: chartOpts(false),
+      });
+    }
   }
 
   // Category breakdown
@@ -386,7 +396,7 @@ async function loadPerformance() {
     if (pf.open && p.status !== "open") return false;
     if (pf.settled && p.status === "open") return false;
     if (pf.wins && !(p.status === "won" || (p.status === "sold" && p.pnl > 0))) return false;
-    if (pf.losses && !(p.status === "lost" || (p.status === "sold" && p.pnl <= 0))) return false;
+    if (pf.losses && !(p.status === "lost" || (p.status === "sold" && p.pnl < 0))) return false;
     return true;
   });
   $("pf-count").textContent = filtered.length === data.positions.length
@@ -457,8 +467,12 @@ function chartOpts(legend = true) {
 /* ── Performance controls ──────────────────────────────────────────── */
 let chartRange = "all";
 const positionFilters = { open: false, settled: false, wins: false, losses: false };
-$("r-all").onclick = () => { chartRange = "all"; $("r-all").classList.add("on"); $("r-24h").classList.remove("on"); loadPerformance(); };
-$("r-24h").onclick = () => { chartRange = "24h"; $("r-24h").classList.add("on"); $("r-all").classList.remove("on"); loadPerformance(); };
+function rebuildCharts() {
+  if (pnlChart) { pnlChart.destroy(); pnlChart = null; }
+  if (posChart) { posChart.destroy(); posChart = null; }
+}
+$("r-all").onclick = () => { chartRange = "all"; $("r-all").classList.add("on"); $("r-24h").classList.remove("on"); rebuildCharts(); loadPerformance(); };
+$("r-24h").onclick = () => { chartRange = "24h"; $("r-24h").classList.add("on"); $("r-all").classList.remove("on"); rebuildCharts(); loadPerformance(); };
 document.querySelectorAll("[data-pf]").forEach((chip) => {
   chip.onclick = () => {
     const key = chip.dataset.pf;
@@ -866,10 +880,13 @@ async function refreshHeader() {
 let bgTick = 0;
 async function tick() {
   await pollSignals();                     // always: signals + sweep status
+  // Performance tab refreshes every tick (10s) so the live chart advances in
+  // step with the 15s tracking cadence instead of lagging 30s behind.
+  if (tabVisible("performance")) loadPerformance().catch(() => {});
   bgTick += 1;
-  if (bgTick % 3 === 0) {                  // every ~30s: everything else
+  if (bgTick % 3 === 0) {                  // every ~30s: header + background tabs
     refreshHeader();
-    loadPerformance().catch(() => {});
+    if (!tabVisible("performance")) loadPerformance().catch(() => {});  // keep KPIs warm off-tab
     if (tabVisible("activity")) loadActivity().catch(() => {});
   }
 }
