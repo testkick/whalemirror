@@ -150,7 +150,9 @@ def refresh_positions() -> dict:
     # Snapshot per mode (open book value + cumulative realized).
     summary = store.performance_summary()
     for mode, s in summary.items():
-        if s["open_count"] or s["realized"]:
+        # Always snapshot when there's any activity in the mode (open OR any
+        # closed history), so the series has no gaps that make the chart lag.
+        if s["open_count"] or s["realized"] or s.get("cost_basis"):
             store.add_snapshot(mode, s["open_cost"],
                                s["open_cost"] + s["unrealized"], s["realized"])
 

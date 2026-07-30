@@ -413,11 +413,27 @@ async def startup():
 @app.get("/api/performance")
 def performance(request: Request):
     require_session(request)
+    summary = store.performance_summary()
+    snaps = {"dry_run": store.snapshots("dry_run"), "live": store.snapshots("live")}
+    # Append a live "now" point so the chart's tail always equals the headline
+    # totals (they're computed from the same summary, same instant). The stored
+    # history stays the tracker's job; this only guarantees the endpoint agrees
+    # with itself and never shows a chart that lags the KPI cards.
+    now = time.time()
+    for mode, s in summary.items():
+        tip = {"ts": now, "mode": mode, "cost": s["open_cost"],
+               "value": s["open_cost"] + s["unrealized"], "realized": s["realized"]}
+        series = snaps.get(mode) or []
+        # Replace a very-recent stored point rather than doubling it up.
+        if series and now - series[-1]["ts"] < 5:
+            series[-1] = tip
+        else:
+            series.append(tip)
+        snaps[mode] = series
     return {
-        "summary": store.performance_summary(),
+        "summary": summary,
         "positions": store.all_positions(),
-        "snapshots": {"dry_run": store.snapshots("dry_run"),
-                      "live": store.snapshots("live")},
+        "snapshots": snaps,
         "categories": store.category_breakdown(),
     }
 
