@@ -274,10 +274,31 @@ def mirror_history(limit: int = 100) -> list[dict]:
 
 
 def mirrored_signal_ids() -> set[str]:
+    """Signal ids we've already acted on — sourced from the POSITIONS table, the
+    real state, not the mirrors activity log (which is pruned and also records
+    sells). This is what prevents opening the same bet twice."""
+    with db() as conn:
+        rows = conn.execute("SELECT DISTINCT signal_id FROM positions").fetchall()
+    return {r["signal_id"] for r in rows if r["signal_id"]}
+
+
+def open_signal_ids() -> set[str]:
+    """Signal ids with a CURRENTLY OPEN position (for same-market dedupe)."""
     with db() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT signal_id FROM mirrors WHERE status='ok'").fetchall()
-    return {r["signal_id"] for r in rows}
+            "SELECT DISTINCT signal_id FROM positions WHERE status='open'").fetchall()
+    return {r["signal_id"] for r in rows if r["signal_id"]}
+
+
+def has_open_on_market(condition_id: str, outcome_index: int) -> bool:
+    """True if an OPEN position already exists on this exact market+outcome —
+    the last-line guard against duplicate same-side bets, independent of
+    signal-id bookkeeping."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM positions WHERE status='open' AND condition_id=? "
+            "AND outcome_index=? LIMIT 1", (condition_id, outcome_index)).fetchone()
+    return row is not None
 
 
 def spent_today_usd() -> float:

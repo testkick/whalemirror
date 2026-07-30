@@ -115,6 +115,11 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
         cat = store.classify_category(signal.get("title"), signal.get("category"))
         if cat not in enabled:
             return fail("skipped", f"category focus: '{cat}' not in enabled categories")
+    # Hard duplicate guard: never open a second position on the same market+
+    # outcome we already hold open. Independent of signal-id bookkeeping, so it
+    # catches log pruning, sell/re-buy, and same-sweep races.
+    if store.has_open_on_market(signal["condition_id"], signal["outcome_index"]):
+        return fail("skipped", f"duplicate: already hold '{signal['title']}' → {signal['outcome']}")
     conflict = store.open_position_conflict(
         signal["condition_id"], signal["outcome_index"], store.event_key_for(signal),
         title=signal.get("title", ""), outcome=signal.get("outcome", ""))
