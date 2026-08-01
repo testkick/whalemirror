@@ -402,6 +402,12 @@ async def startup():
     except Exception:  # noqa: BLE001
         pass
     try:
+        bad = store.purge_bad_snapshots()
+        if bad:
+            print(f"purged {bad} corrupt P&L snapshots")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         n = store.backfill_categories()
         if n:
             print(f"backfilled categories for {n} positions")

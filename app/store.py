@@ -1074,3 +1074,21 @@ def api_overview() -> dict:
     return {"generated_at": time.time(), "summary": summary,
             "categories": category_breakdown(), "counts": counts,
             "last_refresh": last_refresh()}
+
+
+def purge_bad_snapshots() -> int:
+    """Delete physically-impossible P&L snapshots. Total P&L (realized + value -
+    cost) can never be more negative than the total amount ever wagered, so any
+    snapshot far below that floor is corrupt (a stale-price artifact) and is
+    dragging the chart axis. Removes them so the chart scales to real data."""
+    with db() as conn:
+        # Worst possible loss = everything ever invested. Use a generous 2x
+        # buffer so we only nuke clearly-broken points, not legitimate drawdowns.
+        floor_row = conn.execute(
+            "SELECT COALESCE(SUM(usd),0) c FROM positions").fetchone()
+        max_loss = (floor_row["c"] or 0) * 2 + 100
+        deleted = conn.execute(
+            "DELETE FROM pnl_snapshots WHERE (realized + value - cost) < ? "
+            "OR (realized + value - cost) > ?",
+            (-max_loss, max_loss)).rowcount
+    return deleted
