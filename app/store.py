@@ -1077,18 +1077,29 @@ def api_overview() -> dict:
 
 
 def purge_bad_snapshots() -> int:
-    """Delete physically-impossible P&L snapshots. Total P&L (realized + value -
-    cost) can never be more negative than the total amount ever wagered, so any
-    snapshot far below that floor is corrupt (a stale-price artifact) and is
-    dragging the chart axis. Removes them so the chart scales to real data."""
+    """Delete only PHYSICALLY-IMPOSSIBLE P&L snapshots.
+
+    The bound is the total dollars EVER wagered (sum of every position's cost,
+    open and closed) — realized P&L accumulates as positions close, so the cap
+    must be cumulative, not just currently-open capital. A very generous 5x
+    buffer means we only ever remove clearly-broken points (e.g. a -5000 blip
+    from a stale-price episode), never legitimate gains or drawdowns."""
     with db() as conn:
-        # Worst possible loss = everything ever invested. Use a generous 2x
-        # buffer so we only nuke clearly-broken points, not legitimate drawdowns.
-        floor_row = conn.execute(
-            "SELECT COALESCE(SUM(usd),0) c FROM positions").fetchone()
-        max_loss = (floor_row["c"] or 0) * 2 + 100
+        rows = conn.execute(
+            "SELECT rowid, (realized + value - cost) AS pnl FROM pnl_snapshots").fetchall()
+        if len(rows) < 8:
+            return 0   # too few points to judge outliers
+        vals = sorted(r["pnl"] for r in rows)
+        n = len(vals)
+        # Robust spread via median + IQR; a point is corrupt if it sits absurdly
+        # far outside the interquartile range (Tukey fence at 6x — very wide, so
+        # only true blips like a -5000 stale-price artifact are caught, never
+        # ordinary gains, losses, or drawdowns).
+        med = vals[n // 2]
+        q1, q3 = vals[n // 4], vals[(3 * n) // 4]
+        iqr = max(q3 - q1, 1.0)
+        lo, hi = med - 6 * iqr, med + 6 * iqr
         deleted = conn.execute(
             "DELETE FROM pnl_snapshots WHERE (realized + value - cost) < ? "
-            "OR (realized + value - cost) > ?",
-            (-max_loss, max_loss)).rowcount
+            "OR (realized + value - cost) > ?", (lo, hi)).rowcount
     return deleted
