@@ -334,12 +334,24 @@ async function loadPerformance() {
   $("performance-empty").classList.toggle("hidden", data.positions.length > 0);
 
   // Cumulative P&L line (dry vs live), from snapshots
-  const cutoff = chartRange === "24h" ? Date.now() / 1000 - 86400 : 0;
+  const WINDOWS = { "24h": 86400, "7d": 604800, "30d": 2592000, "all": 0 };
+  const span = WINDOWS[chartRange] ?? 604800;
+  const cutoff = span ? Date.now() / 1000 - span : 0;
   const mkSeries = (snaps) => snaps.filter((s) => s.ts >= cutoff).map((s) => ({
     x: new Date(s.ts * 1000).toLocaleString(),
     y: +(s.realized + (s.value - s.cost)).toFixed(2),
   }));
   const dry = mkSeries(data.snapshots.dry_run), live = mkSeries(data.snapshots.live);
+  // Robust axis bounds: ignore extreme outliers (corrupt snapshots) so the
+  // real data fills the chart height instead of being crushed by one bad point.
+  const allY = [...dry, ...live].map((p) => p.y).filter((y) => isFinite(y)).sort((a, b) => a - b);
+  let yMin, yMax;
+  if (allY.length > 4) {
+    const pct = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor(arr.length * p)))];
+    const lo = pct(allY, 0.02), hi = pct(allY, 0.98);
+    const pad = Math.max((hi - lo) * 0.1, 5);
+    yMin = lo - pad; yMax = hi + pad;
+  }
   if (chartsVisible) {
     const labels = (dry.length >= live.length ? dry : live).map((p) => p.x);
     // Update in place when the chart already exists (cheap, visibly extends the
@@ -356,8 +368,13 @@ async function loadPerformance() {
           { label: "Dry run", data: dry.map((p) => p.y), borderColor: C("--amber"), backgroundColor: "transparent", tension: 0.25, pointRadius: 0 },
           { label: "Live", data: live.map((p) => p.y), borderColor: C("--sonar"), backgroundColor: "transparent", tension: 0.25, pointRadius: 0 },
         ]},
-        options: chartOpts(),
+        options: chartOpts(false, yMin, yMax),
       });
+    }
+    // keep axis bounds fresh on in-place updates too
+    if (pnlChart && yMin !== undefined) {
+      pnlChart.options.scales.y.min = yMin;
+      pnlChart.options.scales.y.max = yMax;
     }
 
     // Per-position P&L bars, green/red — also in place
@@ -455,24 +472,35 @@ async function loadPerformance() {
   });
 }
 
-function chartOpts(legend = true) {
+function chartOpts(legend = true, yMin, yMax) {
   const grid = { color: C("--line") }, ticks = { color: C("--muted"), font: { family: "IBM Plex Mono", size: 10 } };
+  const y = { grid, ticks };
+  if (yMin !== undefined) { y.min = yMin; y.max = yMax; }
   return {
     responsive: true,
+    animation: false,
     plugins: { legend: { display: legend, labels: { color: C("--ink"), font: { family: "Barlow" } } } },
-    scales: { x: { grid, ticks: { ...ticks, maxTicksLimit: 8 } }, y: { grid, ticks } },
+    scales: { x: { grid, ticks: { ...ticks, maxTicksLimit: 8 } }, y },
   };
 }
 
 /* ── Performance controls ──────────────────────────────────────────── */
-let chartRange = "all";
+let chartRange = "7d";
 const positionFilters = { open: false, settled: false, wins: false, losses: false };
 function rebuildCharts() {
   if (pnlChart) { pnlChart.destroy(); pnlChart = null; }
   if (posChart) { posChart.destroy(); posChart = null; }
 }
-$("r-all").onclick = () => { chartRange = "all"; $("r-all").classList.add("on"); $("r-24h").classList.remove("on"); rebuildCharts(); loadPerformance(); };
-$("r-24h").onclick = () => { chartRange = "24h"; $("r-24h").classList.add("on"); $("r-all").classList.remove("on"); rebuildCharts(); loadPerformance(); };
+["24h","7d","30d","all"].forEach((r) => {
+  const btn = $("r-" + r);
+  if (!btn) return;
+  btn.onclick = () => {
+    chartRange = r;
+    ["24h","7d","30d","all"].forEach((x) => $("r-" + x) && $("r-" + x).classList.toggle("on", x === r));
+    rebuildCharts();
+    loadPerformance();
+  };
+});
 document.querySelectorAll("[data-pf]").forEach((chip) => {
   chip.onclick = () => {
     const key = chip.dataset.pf;
