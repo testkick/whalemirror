@@ -342,6 +342,9 @@ async function loadPerformance() {
     y: +(s.realized + (s.value - s.cost)).toFixed(2),
   }));
   const dry = mkSeries(data.snapshots.dry_run), live = mkSeries(data.snapshots.live);
+  const totalPts = dry.length + live.length;
+  const sparse = (dry.length + live.length) <= 30;   // show dots when few points
+  const dotRadius = sparse ? 3 : 0;
   // Robust axis bounds: ignore extreme outliers (corrupt snapshots) so the
   // real data fills the chart height instead of being crushed by one bad point.
   const allY = [...dry, ...live].map((p) => p.y).filter((y) => isFinite(y)).sort((a, b) => a - b);
@@ -352,6 +355,8 @@ async function loadPerformance() {
     const pad = Math.max((hi - lo) * 0.1, 5);
     yMin = lo - pad; yMax = hi + pad;
   }
+  const pnlEmpty = $("pnl-empty");
+  if (pnlEmpty) pnlEmpty.classList.toggle("hidden", totalPts >= 2);
   if (chartsVisible) {
     const labels = (dry.length >= live.length ? dry : live).map((p) => p.x);
     // Update in place when the chart already exists (cheap, visibly extends the
@@ -365,16 +370,17 @@ async function loadPerformance() {
       pnlChart = new Chart($("pnl-chart"), {
         type: "line",
         data: { labels, datasets: [
-          { label: "Dry run", data: dry.map((p) => p.y), borderColor: C("--amber"), backgroundColor: "transparent", tension: 0.25, pointRadius: 0 },
-          { label: "Live", data: live.map((p) => p.y), borderColor: C("--sonar"), backgroundColor: "transparent", tension: 0.25, pointRadius: 0 },
+          { label: "Dry run", data: dry.map((p) => p.y), borderColor: C("--amber"), backgroundColor: "transparent", tension: 0.25, pointRadius: dotRadius, pointBackgroundColor: C("--amber") },
+          { label: "Live", data: live.map((p) => p.y), borderColor: C("--sonar"), backgroundColor: "transparent", tension: 0.25, pointRadius: dotRadius, pointBackgroundColor: C("--sonar") },
         ]},
         options: chartOpts(false, yMin, yMax),
       });
     }
     // keep axis bounds fresh on in-place updates too
-    if (pnlChart && yMin !== undefined) {
-      pnlChart.options.scales.y.min = yMin;
-      pnlChart.options.scales.y.max = yMax;
+    if (pnlChart) {
+      if (yMin !== undefined) { pnlChart.options.scales.y.min = yMin; pnlChart.options.scales.y.max = yMax; }
+      pnlChart.data.datasets[0].pointRadius = dotRadius;
+      pnlChart.data.datasets[1].pointRadius = dotRadius;
     }
 
     // Per-position P&L bars, green/red — also in place
