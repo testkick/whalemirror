@@ -341,7 +341,12 @@ async function loadPerformance() {
     x: new Date(s.ts * 1000).toLocaleString(),
     y: +(s.realized + (s.value - s.cost)).toFixed(2),
   }));
-  const dry = mkSeries(data.snapshots.dry_run), live = mkSeries(data.snapshots.live);
+  const hasSignal = (arr) => arr.length >= 1 && arr.some((p) => Math.abs(p.y) > 0.001);
+  let dry = mkSeries(data.snapshots.dry_run), live = mkSeries(data.snapshots.live);
+  // Drop a series with no real data (e.g. an all-zero 'live' mode) so it doesn't
+  // plant a phantom dot at 0.
+  if (!hasSignal(dry)) dry = [];
+  if (!hasSignal(live)) live = [];
   const totalPts = dry.length + live.length;
   const sparse = (dry.length + live.length) <= 30;   // show dots when few points
   const dotRadius = sparse ? 3 : 0;
@@ -519,6 +524,76 @@ document.querySelectorAll("[data-pf]").forEach((chip) => {
 });
 
 /* ── Whales tab ────────────────────────────────────────────────────── */
+let whaleView = "overall";
+function setWhaleView(v) {
+  whaleView = v;
+  $("w-view-overall").classList.toggle("on", v === "overall");
+  $("w-view-category").classList.toggle("on", v === "category");
+  $("w-overall").classList.toggle("hidden", v !== "overall");
+  $("w-category").classList.toggle("hidden", v !== "category");
+  if (v === "category") loadCategoryLeaders();
+}
+$("w-view-overall").onclick = () => setWhaleView("overall");
+$("w-view-category").onclick = () => setWhaleView("category");
+
+async function loadCategoryLeaders() {
+  const data = await api("/api/whales/category-leaders");
+  const boards = data.boards || {};
+  const cats = Object.keys(boards).sort();
+  const container = $("category-leaders");
+  if (!cats.length) {
+    container.innerHTML = `<p class="empty">No category has ≥5 settled bets from a whale yet. Check back as positions resolve.</p>`;
+    return;
+  }
+  container.innerHTML = cats.map((cat) => {
+    const rows = boards[cat].slice(0, 8);
+    return `
+      <div class="card" style="margin-bottom:14px">
+        <h2>${esc(cat)}</h2>
+        <table class="activity-table">
+          <thead><tr><th>Whale</th><th class="num">Bets</th><th class="num">W/L</th>
+            <th class="num">Win%</th><th class="num">Our P&L</th><th class="num">ROI</th><th></th></tr></thead>
+          <tbody>${rows.map((w) => `
+            <tr>
+              <td><span class="whale-link" data-wopen="${esc(w.address)}">${esc(w.name)}</span></td>
+              <td class="num">${w.settled}</td>
+              <td class="num">${w.wins}/${w.losses}</td>
+              <td class="num">${w.win_rate != null ? (w.win_rate*100).toFixed(0)+"%" : "—"}</td>
+              <td class="num ${pnlCls(w.pnl)}">${money(w.pnl)}</td>
+              <td class="num ${pnlCls(w.roi)}">${(w.roi*100).toFixed(1)}%</td>
+              <td><button class="chip ${w.followed_here ? "on" : ""}"
+                    data-catfollow="${esc(w.address)}" data-catname="${esc(w.name)}" data-cat="${esc(cat)}">
+                    ${w.followed_here ? "★ following" : "☆ follow here"}</button></td>
+            </tr>`).join("")}</tbody>
+        </table>
+      </div>`;
+  }).join("");
+
+  container.querySelectorAll("[data-wopen]").forEach((el) =>
+    el.onclick = () => openWhale(el.dataset.wopen));
+
+  container.querySelectorAll("[data-catfollow]").forEach((btn) => {
+    btn.onclick = async () => {
+      const addr = btn.dataset.catfollow, name = btn.dataset.catname, cat = btn.dataset.cat;
+      // Add this category to the whale's allowed set (follow if not already).
+      const prefs = data.prefs || {};
+      const current = (prefs[addr] && prefs[addr].categories) || [];
+      const already = current.includes(cat);
+      const next = already ? current.filter((c) => c !== cat) : [...current, cat];
+      if (!data.followed[addr]) {
+        await api("/api/whales/follow", { method: "POST",
+          body: JSON.stringify({ address: addr, name, categories: next }) });
+      } else {
+        await api(`/api/whales/${addr}/categories`, { method: "POST",
+          body: JSON.stringify({ categories: next }) });
+      }
+      flash("ok", already ? `${name} no longer followed for ${cat}.`
+                          : `Following ${name} for ${cat}.`);
+      loadCategoryLeaders();
+    };
+  });
+}
+
 let whaleSort = { key: "pnl", dir: -1 };
 let whaleData = null;
 async function loadWhales() {
@@ -793,6 +868,9 @@ $("setup-skip").onclick = () => saveSetup(true);
 /* ── Whale detail modal ────────────────────────────────────────────── */
 async function openWhale(address) {
   try {
+    if (!allCategories || !allCategories.length) {
+      try { allCategories = (await api("/api/categories")).categories; } catch (_) {}
+    }
     const w = await api(`/api/whales/${address}`);
     const pct = (v) => (v == null ? "\u2014" : (v * 100).toFixed(0) + "%");
     const sampleRows = (rows, emptyMsg) => rows.length ? rows.map((p) => `
@@ -836,12 +914,35 @@ async function openWhale(address) {
       <div class="whale-sub">Currently open together</div>
       ${sampleRows(w.samples.open, "No open positions with this whale.")}
 
+      ${w.followed ? `
+      <div class="whale-sub">Mirror this whale only in</div>
+      <div id="whale-cat-chips" class="cat-chips"></div>
+      <p class="hint">None selected = mirror them in all categories. Their category ROI above shows where they earn.</p>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn btn-primary" id="whale-cats-save">Save categories</button>
+        <span id="whale-cats-saved" class="saved hidden">Saved</span>
+      </div>` : ""}
       <div class="btn-row" style="margin-top:18px">
         <button class="btn ${w.followed ? "" : "btn-mirror"}" id="whale-modal-follow"
           data-addr="${esc(w.address)}" data-name="${esc(w.name)}">
           ${w.followed ? "Unfollow" : "Follow"} ${esc(w.name)}</button>
       </div>`;
     $("whale-modal").classList.remove("hidden");
+    if (w.followed && $("whale-cat-chips")) {
+      const whaleCats = (whaleData && whaleData.prefs && whaleData.prefs[w.address] &&
+                         whaleData.prefs[w.address].categories) || [];
+      const allCats = (allCategories && allCategories.length) ? allCategories
+        : w.categories.map((c) => c.category);
+      renderCatChips("whale-cat-chips", allCats, whaleCats);
+      $("whale-cats-save").onclick = async () => {
+        const picked = readCatChips("whale-cat-chips", allCats);
+        await api(`/api/whales/${w.address}/categories`, {
+          method: "POST", body: JSON.stringify({ categories: picked }) });
+        $("whale-cats-saved").classList.remove("hidden");
+        setTimeout(() => $("whale-cats-saved").classList.add("hidden"), 2000);
+        if (whaleData) loadWhales();
+      };
+    }
     $("whale-modal-follow").onclick = async () => {
       const b = $("whale-modal-follow");
       if (b.textContent.trim().startsWith("Unfollow")) await api(`/api/whales/follow/${b.dataset.addr}`, { method: "DELETE" });

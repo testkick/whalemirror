@@ -279,6 +279,11 @@
 
     <!-- WHALES -->
     <section id="tab-whales" class="tab-panel hidden">
+      <div class="range-toggle" style="margin-bottom:14px">
+        <button class="chip on" id="w-view-overall">Overall</button>
+        <button class="chip" id="w-view-category">By category</button>
+      </div>
+      <div id="w-overall">
       <p class="hint" style="margin-bottom:12px">Whales ranked by <b>our</b> results when they co-signed a mirrored signal. Attribution starts from positions opened after this deploy.</p>
       <div id="whales-empty" class="empty hidden">No whale attribution yet — mirror some signals and this fills in as they settle.</div>
       <table class="activity-table" id="whales-table">
@@ -291,6 +296,12 @@
         </tr></thead>
         <tbody id="whales-body"></tbody>
       </table>
+      </div>
+
+      <div id="w-category" class="hidden">
+        <p class="hint" style="margin-bottom:12px">Best whales <b>in each category</b> by our ROI. Whales need ≥5 settled bets in a category to rank. Star lets you follow them <b>for that category only</b>.</p>
+        <div id="category-leaders"></div>
+      </div>
     </section>
 
     <!-- ACTIVITY -->
