@@ -395,3 +395,9 @@ footer {
 .settings-subhead { font-family: var(--display); font-size: 12px; letter-spacing: 0.12em;
   text-transform: uppercase; color: var(--muted); margin: 14px 0 2px; padding-top: 10px;
   border-top: 1px solid var(--line); }
+
+/* Chart sizing: fixed height so maintainAspectRatio:false fills correctly and
+   the axis labels never get clipped at the container edge. */
+.chart-card { margin-bottom: 14px; padding-bottom: 20px; }
+.chart-card canvas { height: 320px !important; max-height: 320px; width: 100% !important; }
+#pos-chart { height: 260px !important; max-height: 260px; }

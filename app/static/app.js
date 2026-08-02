@@ -337,8 +337,18 @@ async function loadPerformance() {
   const WINDOWS = { "24h": 86400, "7d": 604800, "30d": 2592000, "all": 0 };
   const span = WINDOWS[chartRange] ?? 604800;
   const cutoff = span ? Date.now() / 1000 - span : 0;
+  // Compact, window-aware axis labels: intraday windows show clock time,
+  // multi-day windows show short dates. Full timestamp moves to the tooltip.
+  const fmtLabel = (ts) => {
+    const d = new Date(ts * 1000);
+    if (chartRange === "24h")
+      return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return d.toLocaleDateString([], { month: "numeric", day: "numeric" })
+         + " " + d.toLocaleTimeString([], { hour: "numeric" });
+  };
   const mkSeries = (snaps) => snaps.filter((s) => s.ts >= cutoff).map((s) => ({
-    x: new Date(s.ts * 1000).toLocaleString(),
+    x: fmtLabel(s.ts),
+    full: new Date(s.ts * 1000).toLocaleString(),
     y: +(s.realized + (s.value - s.cost)).toFixed(2),
   }));
   const hasSignal = (arr) => arr.length >= 1 && arr.some((p) => Math.abs(p.y) > 0.001);
@@ -357,9 +367,10 @@ async function loadPerformance() {
   if (allY.length > 4) {
     const pct = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor(arr.length * p)))];
     const lo = pct(allY, 0.02), hi = pct(allY, 0.98);
-    const pad = Math.max((hi - lo) * 0.1, 5);
-    yMin = lo - pad; yMax = hi + pad;
+    const pad = Math.max((hi - lo) * 0.15, 10);   // more headroom so the line
+    yMin = lo - pad; yMax = hi + pad;             // never touches top/bottom edge
   }
+  const fullLabels = (dry.length >= live.length ? dry : live).map((p) => p.full);
   const pnlEmpty = $("pnl-empty");
   if (pnlEmpty) pnlEmpty.classList.toggle("hidden", totalPts >= 2);
   if (chartsVisible) {
@@ -483,15 +494,28 @@ async function loadPerformance() {
   });
 }
 
-function chartOpts(legend = true, yMin, yMax) {
+function chartOpts(legend = true, yMin, yMax, fullLabels) {
   const grid = { color: C("--line") }, ticks = { color: C("--muted"), font: { family: "IBM Plex Mono", size: 10 } };
-  const y = { grid, ticks };
+  const y = { grid, ticks: { ...ticks, padding: 6 } };
   if (yMin !== undefined) { y.min = yMin; y.max = yMax; }
   return {
     responsive: true,
+    maintainAspectRatio: false,
     animation: false,
-    plugins: { legend: { display: legend, labels: { color: C("--ink"), font: { family: "Barlow" } } } },
-    scales: { x: { grid, ticks: { ...ticks, maxTicksLimit: 8 } }, y },
+    layout: { padding: { right: 16, left: 4, top: 8, bottom: 4 } },
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: { display: legend, labels: { color: C("--ink"), font: { family: "Barlow" } } },
+      tooltip: {
+        callbacks: {
+          title: (items) => (fullLabels && items[0] ? fullLabels[items[0].dataIndex] : ""),
+        },
+      },
+    },
+    scales: {
+      x: { grid, ticks: { ...ticks, maxTicksLimit: 7, maxRotation: 0, minRotation: 0, autoSkip: true, padding: 6 } },
+      y,
+    },
   };
 }
 
