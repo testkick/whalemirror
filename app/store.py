@@ -27,11 +27,24 @@ def _fernet() -> Fernet:
     return Fernet(key)
 
 
+_wal_ready = False
+
 @contextmanager
 def db():
+    global _wal_ready
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    # timeout: wait up to 10s for a competing writer instead of erroring out.
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    if not _wal_ready:
+        # WAL allows a reader (or the tracker) to proceed while a writer (the
+        # sweep) is mid-transaction — key now that both run concurrently.
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            _wal_ready = True
+        except sqlite3.Error:
+            pass
     try:
         yield conn
         conn.commit()
@@ -49,6 +62,7 @@ def _migrate(conn):
         "ALTER TABLE positions ADD COLUMN exit_reason TEXT",
         "ALTER TABLE positions ADD COLUMN category TEXT",
         "ALTER TABLE positions ADD COLUMN event_key TEXT",
+        "ALTER TABLE followed_whales ADD COLUMN categories TEXT",
         """CREATE TABLE IF NOT EXISTS position_whales (
             position_id INTEGER NOT NULL,
             address TEXT NOT NULL,
@@ -681,10 +695,52 @@ def followed_whales() -> dict[str, str]:
     return {r["address"]: r["name"] for r in rows}
 
 
-def follow_whale(address: str, name: str):
+def followed_whale_prefs() -> dict[str, dict]:
+    """Full follow records incl. per-whale category filter.
+    categories == [] / None means 'mirror them in ALL categories'."""
     with db() as conn:
-        conn.execute("INSERT OR REPLACE INTO followed_whales (address, name, added) VALUES (?, ?, ?)",
-                     (address.lower(), name, time.time()))
+        rows = conn.execute(
+            "SELECT address, name, categories FROM followed_whales").fetchall()
+    out = {}
+    for r in rows:
+        cats = []
+        if r["categories"]:
+            try:
+                cats = json.loads(r["categories"]) or []
+            except (json.JSONDecodeError, TypeError):
+                cats = []
+        out[r["address"]] = {"name": r["name"], "categories": cats}
+    return out
+
+
+def whale_categories(address: str) -> list[str]:
+    """Categories a followed whale is allowed in ([] = all). Empty for
+    non-followed whales too (so they're unrestricted at consensus level)."""
+    with db() as conn:
+        row = conn.execute("SELECT categories FROM followed_whales WHERE address=?",
+                           (address.lower(),)).fetchone()
+    if not row or not row["categories"]:
+        return []
+    try:
+        return json.loads(row["categories"]) or []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def set_whale_categories(address: str, categories: list[str]):
+    with db() as conn:
+        conn.execute("UPDATE followed_whales SET categories=? WHERE address=?",
+                     (json.dumps(categories or []), address.lower()))
+
+
+def follow_whale(address: str, name: str, categories: list[str] | None = None):
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO followed_whales (address, name, added, categories) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(address) DO UPDATE SET name=excluded.name",
+            (address.lower(), name, time.time(),
+             json.dumps(categories) if categories else None))
 
 
 def unfollow_whale(address: str):
@@ -1103,3 +1159,41 @@ def purge_bad_snapshots() -> int:
             "DELETE FROM pnl_snapshots WHERE (realized + value - cost) < ? "
             "OR (realized + value - cost) > ?", (lo, hi)).rowcount
     return deleted
+
+
+def category_leaderboards(min_settled: int = 5) -> dict[str, list[dict]]:
+    """For each category, rank whales by OUR realized results on mirrored
+    positions they co-signed. Only whales with >= min_settled settled bets in
+    that category are ranked (so a 1-for-1 fluke doesn't top the board)."""
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT COALESCE(NULLIF(p.category,''),'Uncategorized') AS category,
+                   pw.address, MAX(pw.name) AS name,
+                   COUNT(*) AS positions,
+                   COALESCE(SUM(p.usd),0) AS invested,
+                   COALESCE(SUM(p.pnl),0) AS pnl,
+                   SUM(CASE WHEN p.status='won' OR (p.status='sold' AND p.pnl>0) THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN p.status='lost' OR (p.status='sold' AND p.pnl<0) THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN p.status='open' THEN 1 ELSE 0 END) AS open_count
+            FROM position_whales pw JOIN positions p ON p.id = pw.position_id
+            GROUP BY category, pw.address
+        """).fetchall()
+    followed = followed_whales()
+    prefs = followed_whale_prefs()
+    boards: dict[str, list[dict]] = {}
+    for r in rows:
+        settled = r["wins"] + r["losses"]
+        if settled < min_settled:
+            continue
+        d = dict(r)
+        d["win_rate"] = round(r["wins"] / settled, 3) if settled else None
+        d["roi"] = round(r["pnl"] / r["invested"], 4) if r["invested"] else 0.0
+        d["settled"] = settled
+        d["followed"] = r["address"] in followed
+        # is this whale already restricted to (or including) this category?
+        wc = prefs.get(r["address"], {}).get("categories") or []
+        d["followed_here"] = d["followed"] and (not wc or r["category"] in wc)
+        boards.setdefault(r["category"], []).append(d)
+    for cat in boards:
+        boards[cat].sort(key=lambda x: x["roi"], reverse=True)
+    return boards

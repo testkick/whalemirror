@@ -100,11 +100,36 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
     lo, hi = settings["min_entry_price"], settings["max_entry_price"]
     if not (lo <= price_now <= hi):
         return fail("skipped", f"entry band: price {price_now:.3f} outside [{lo:.2f}, {hi:.2f}]", price_now)
+    cat = store.classify_category(signal.get("title"), signal.get("category"))
     enabled_cats = settings.get("enabled_categories") or []
-    if enabled_cats:
-        cat = store.classify_category(signal.get("title"), signal.get("category"))
-        if cat not in enabled_cats:
-            return fail("skipped", f"category filter: '{cat}' not in enabled categories")
+    if enabled_cats and cat not in enabled_cats:
+        return fail("skipped", f"category filter: '{cat}' not in enabled categories")
+
+    # Per-whale category filter. For a FOLLOWED SOLO signal, honor that whale's
+    # allowed categories. For CONSENSUS, only block if EVERY co-signer is
+    # restricted away from this category (i.e. no followed co-signer allows it,
+    # and there are no unrestricted co-signers) — a single unrestricted or
+    # in-category whale keeps the consensus valid.
+    whales = signal.get("whale_details") or []
+    if signal.get("signal_type") == "followed" and whales:
+        allowed = store.whale_categories(whales[0]["address"])  # already lowercases
+        if allowed and cat not in allowed:
+            return fail("skipped",
+                        f"whale filter: {whales[0]['name']} not mirrored in '{cat}'")
+    elif whales:
+        # consensus stays valid if ANY co-signer allows this category (or is
+        # unfollowed / unrestricted). Prefs are keyed by lowercase address.
+        prefs = store.followed_whale_prefs()
+        any_ok = False
+        for w in whales:
+            addr = (w.get("address") or "").lower()
+            wc = prefs.get(addr, {}).get("categories")
+            if addr not in prefs or not wc or cat in wc:
+                any_ok = True
+                break
+        if not any_ok:
+            return fail("skipped",
+                        f"whale filter: all co-signers restricted out of '{cat}'")
     max_days = settings.get("max_days_to_resolution") or 0
     if max_days:
         days = _days_to_end(signal.get("end_date"))

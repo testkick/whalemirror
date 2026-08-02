@@ -199,13 +199,35 @@ async def mirror_signal(signal_id: str, body: MirrorBody, request: Request):
 class FollowBody(BaseModel):
     address: str
     name: str
+    categories: list[str] | None = None
 
 
 @app.post("/api/whales/follow")
 def follow(body: FollowBody, request: Request):
     require_session(request)
-    store.follow_whale(body.address, body.name)
-    return {"followed": store.followed_whales()}
+    store.follow_whale(body.address, body.name, body.categories)
+    return {"followed": store.followed_whales(),
+            "prefs": store.followed_whale_prefs()}
+
+
+class WhaleCatsBody(BaseModel):
+    categories: list[str]
+
+
+@app.post("/api/whales/{address}/categories")
+def set_whale_cats(address: str, body: WhaleCatsBody, request: Request):
+    require_session(request)
+    store.set_whale_categories(address, body.categories)
+    return {"address": address.lower(), "categories": body.categories,
+            "prefs": store.followed_whale_prefs()}
+
+
+@app.get("/api/whales/category-leaders")
+def category_leaders(request: Request, min_settled: int = 5):
+    require_session(request)
+    return {"boards": store.category_leaderboards(min_settled=min_settled),
+            "followed": store.followed_whales(),
+            "prefs": store.followed_whale_prefs()}
 
 
 @app.delete("/api/whales/follow/{address}")
@@ -380,7 +402,7 @@ async def scheduler():
         # 15-minute whale sweep, so P&L stays fresh and floor/ceiling/stop-loss
         # exits fire within a minute instead of waiting on a sweep.
         if (time.time() - last_track > TRACK_INTERVAL_SECS
-                and not _tracking["busy"] and not _state["refreshing"]):
+                and not _tracking["busy"]):
             last_track = time.time()
             _tracking["busy"] = True
             try:
@@ -427,10 +449,15 @@ def performance(request: Request):
     # with itself and never shows a chart that lags the KPI cards.
     now = time.time()
     for mode, s in summary.items():
+        # Only tip a mode that has REAL activity — otherwise an all-zero mode
+        # (e.g. 'live' when you've only paper-traded) plots a phantom point at 0.
+        has_activity = s["open_count"] or s["wins"] or s["losses"] or s["realized"]
+        series = snaps.get(mode) or []
+        if not has_activity and not series:
+            snaps[mode] = []
+            continue
         tip = {"ts": now, "mode": mode, "cost": s["open_cost"],
                "value": s["open_cost"] + s["unrealized"], "realized": s["realized"]}
-        series = snaps.get(mode) or []
-        # Replace a very-recent stored point rather than doubling it up.
         if series and now - series[-1]["ts"] < 5:
             series[-1] = tip
         else:
@@ -448,7 +475,8 @@ def performance(request: Request):
 def whale_leaderboard(request: Request):
     require_session(request)
     return {"whales": store.whale_leaderboard(),
-            "followed": store.followed_whales()}
+            "followed": store.followed_whales(),
+            "prefs": store.followed_whale_prefs()}
 
 
 @app.get("/api/whales/{address}")
