@@ -508,16 +508,25 @@ def add_snapshot(mode: str, cost: float, value: float, realized: float):
                      (time.time(), mode, cost, value, realized))
 
 
-def snapshots(mode: str | None = None, limit: int = 2000) -> list[dict]:
-    q = "SELECT * FROM pnl_snapshots"
-    args: tuple = ()
+def snapshots(mode: str | None = None, limit: int = 5000,
+              since: float | None = None) -> list[dict]:
+    """Most RECENT snapshots for the chart. The previous version ordered ASC
+    with a LIMIT, which returned the OLDEST rows once the table grew past the
+    limit — so the chart froze at ~snapshot #2000 (around 7/29) even though
+    fresh rows kept being written. We now take the newest rows (DESC + LIMIT)
+    and return them ascending for plotting. `since` (epoch secs) lets callers
+    fetch only the window they'll display."""
+    clauses, args = [], []
     if mode:
-        q += " WHERE mode=?"
-        args = (mode,)
-    q += " ORDER BY ts ASC LIMIT ?"
+        clauses.append("mode=?"); args.append(mode)
+    if since is not None:
+        clauses.append("ts >= ?"); args.append(since)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     with db() as conn:
-        rows = conn.execute(q, args + (limit,)).fetchall()
-    return [dict(r) for r in rows]
+        rows = conn.execute(
+            f"SELECT * FROM pnl_snapshots{where} ORDER BY ts DESC LIMIT ?",
+            (*args, limit)).fetchall()
+    return [dict(r) for r in reversed(rows)]   # ascending for the chart
 
 
 def peak_capital_deployed(mode: str) -> float:
