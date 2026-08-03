@@ -560,6 +560,19 @@ function setWhaleView(v) {
 $("w-view-overall").onclick = () => setWhaleView("overall");
 $("w-view-category").onclick = () => setWhaleView("category");
 
+function catFollowButton(w, cat) {
+  const st = w.follow_state || (w.followed_here ? "all" : "none");
+  const label = {
+    none:  "\u2606 follow here",     // ☆
+    this:  "\u2605 following here",   // ★ (restricted to categories incl. this)
+    all:   "\u2605 following (all)",  // ★ (followed everywhere)
+    other: "\u2606 add this",         // ☆ (followed, but not this category)
+  }[st];
+  const on = (st === "this" || st === "all") ? "on" : "";
+  return `<button class="chip ${on}" data-catfollow="${esc(w.address)}" data-catname="${esc(w.name)}"
+            data-cat="${esc(cat)}" data-state="${st}">${label}</button>`;
+}
+
 async function loadCategoryLeaders() {
   const data = await api("/api/whales/category-leaders");
   const boards = data.boards || {};
@@ -585,9 +598,7 @@ async function loadCategoryLeaders() {
               <td class="num">${w.win_rate != null ? (w.win_rate*100).toFixed(0)+"%" : "—"}</td>
               <td class="num ${pnlCls(w.pnl)}">${money(w.pnl)}</td>
               <td class="num ${pnlCls(w.roi)}">${(w.roi*100).toFixed(1)}%</td>
-              <td><button class="chip ${w.followed_here ? "on" : ""}"
-                    data-catfollow="${esc(w.address)}" data-catname="${esc(w.name)}" data-cat="${esc(cat)}">
-                    ${w.followed_here ? "★ following" : "☆ follow here"}</button></td>
+              <td>${catFollowButton(w, cat)}</td>
             </tr>`).join("")}</tbody>
         </table>
       </div>`;
@@ -598,21 +609,44 @@ async function loadCategoryLeaders() {
 
   container.querySelectorAll("[data-catfollow]").forEach((btn) => {
     btn.onclick = async () => {
-      const addr = btn.dataset.catfollow, name = btn.dataset.catname, cat = btn.dataset.cat;
-      // Add this category to the whale's allowed set (follow if not already).
+      const addr = btn.dataset.catfollow, name = btn.dataset.catname;
+      const cat = btn.dataset.cat, state = btn.dataset.state;
       const prefs = data.prefs || {};
       const current = (prefs[addr] && prefs[addr].categories) || [];
-      const already = current.includes(cat);
-      const next = already ? current.filter((c) => c !== cat) : [...current, cat];
-      if (!data.followed[addr]) {
+      let next, msg;
+
+      if (state === "none") {
+        // not followed -> follow, restricted to THIS category
+        next = [cat];
         await api("/api/whales/follow", { method: "POST",
           body: JSON.stringify({ address: addr, name, categories: next }) });
-      } else {
+        msg = `Following ${name} for ${cat} only.`;
+      } else if (state === "other") {
+        // followed for other cats -> add this one
+        next = [...current, cat];
         await api(`/api/whales/${addr}/categories`, { method: "POST",
           body: JSON.stringify({ categories: next }) });
+        msg = `Added ${cat} to ${name}.`;
+      } else if (state === "this") {
+        // restricted set includes this cat -> remove it. If that empties the
+        // set, the whale would become "all" — instead, unfollow to honor intent.
+        next = current.filter((c) => c !== cat);
+        if (next.length === 0) {
+          await api(`/api/whales/follow/${addr}`, { method: "DELETE" });
+          msg = `Unfollowed ${name}.`;
+        } else {
+          await api(`/api/whales/${addr}/categories`, { method: "POST",
+            body: JSON.stringify({ categories: next }) });
+          msg = `Removed ${cat} from ${name}.`;
+        }
+      } else if (state === "all") {
+        // followed everywhere -> clicking a category NARROWS them to just it
+        next = [cat];
+        await api(`/api/whales/${addr}/categories`, { method: "POST",
+          body: JSON.stringify({ categories: next }) });
+        msg = `${name} now followed for ${cat} only.`;
       }
-      flash("ok", already ? `${name} no longer followed for ${cat}.`
-                          : `Following ${name} for ${cat}.`);
+      flash("ok", msg);
       loadCategoryLeaders();
     };
   });
