@@ -681,6 +681,26 @@ def housekeeping():
         conn.close()
 
 
+def persistence_diagnostics() -> dict:
+    """Everything needed to tell a persistence problem from a code problem in
+    one glance: newest snapshot age, DB path, and whether that path is on the
+    mounted Railway volume (/data) vs an ephemeral location."""
+    import datetime
+    with db() as conn:
+        row = conn.execute("SELECT MAX(ts) m, COUNT(*) c FROM pnl_snapshots").fetchone()
+    newest = row["m"]
+    path = os.path.abspath(DB_PATH)
+    return {
+        "snapshot_count": row["c"] or 0,
+        "newest_age_secs": round(time.time() - newest) if newest else None,
+        "newest_iso": (datetime.datetime.utcfromtimestamp(newest).isoformat() + "Z"
+                       if newest else None),
+        "db_path": path,
+        # Railway volume is mounted at /data; anything else won't survive redeploys.
+        "db_on_volume": path.startswith("/data"),
+    }
+
+
 def snapshot_count() -> int:
     with db() as conn:
         return conn.execute("SELECT COUNT(*) c FROM pnl_snapshots").fetchone()["c"]

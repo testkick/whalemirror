@@ -34,6 +34,7 @@ SWEEP_MAX_SECS = 900        # a sweep may never occupy the slot longer than this
 PROGRESS_STALL_SECS = 300   # no progress update for this long == stalled
 TRACK_INTERVAL_SECS = 15    # re-price open positions every 15s (fast exits)
 _tracking = {"busy": False, "last_ok": 0.0, "last_result": None, "last_error": None}
+_sched_heartbeat = {"ts": 0.0}   # updated every loop tick; proves scheduler is alive
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────
@@ -376,6 +377,7 @@ async def scheduler():
     last_track = 0.0
     last_housekeeping = 0.0
     while True:
+        _sched_heartbeat["ts"] = time.time()
         settings = store.get_settings()
         interval = max(10, int(settings["refresh_minutes"])) * 60
         last = store.last_refresh() or 0
@@ -495,12 +497,19 @@ def whale_detail(address: str, request: Request):
 @app.get("/healthz")
 def healthz():
     tracking_age = round(time.time() - _tracking["last_ok"]) if _tracking["last_ok"] else None
+    diag = store.persistence_diagnostics()
     return {"ok": True, "signals": len(store.get_signals()),
             "refreshing": _state["refreshing"], "db_mb": store.db_size_mb(),
             "tracking_last_ok_secs_ago": tracking_age,
             "tracking_last_result": _tracking["last_result"],
             "tracking_last_error": _tracking["last_error"],
-            "snapshot_count": store.snapshot_count()}
+            "snapshot_count": diag["snapshot_count"],
+            "newest_snapshot_age_secs": diag["newest_age_secs"],
+            "newest_snapshot_iso": diag["newest_iso"],
+            "db_path": diag["db_path"],
+            "db_on_volume": diag["db_on_volume"],
+            "scheduler_alive_secs_ago": (round(time.time() - _sched_heartbeat["ts"])
+                                         if _sched_heartbeat["ts"] else None)}
 
 
 # ── Static ────────────────────────────────────────────────────────────────
