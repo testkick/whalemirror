@@ -378,15 +378,16 @@ async function loadPerformance() {
     if (pnlChart) {
       pnlChart.data.datasets[0].data = dry;
       pnlChart.data.datasets[1].data = live;
-      pnlChart.update("none");   // "none" = no animation, instant repaint
+      if (yMin !== undefined) { pnlChart.options.scales.y.min = yMin; pnlChart.options.scales.y.max = yMax; }
+      pnlChart.update("none");
     } else {
       pnlChart = new Chart($("pnl-chart"), {
         type: "line",
-        data: { labels, datasets: [
-          { label: "Dry run", data: dry.map((p) => p.y), borderColor: C("--amber"), backgroundColor: "transparent", tension: 0.25, pointRadius: dotRadius, pointBackgroundColor: C("--amber") },
-          { label: "Live", data: live.map((p) => p.y), borderColor: C("--sonar"), backgroundColor: "transparent", tension: 0.25, pointRadius: dotRadius, pointBackgroundColor: C("--sonar") },
+        data: { datasets: [
+          { label: "Dry run", data: dry, parsing: false, borderColor: C("--amber"), backgroundColor: "transparent", tension: 0.25, pointRadius: dotRadius, pointBackgroundColor: C("--amber") },
+          { label: "Live", data: live, parsing: false, borderColor: C("--sonar"), backgroundColor: "transparent", tension: 0.25, pointRadius: dotRadius, pointBackgroundColor: C("--sonar") },
         ]},
-        options: chartOpts(false, yMin, yMax),
+        options: chartOpts(true, yMin, yMax, fmtLabel),
       });
     }
     // keep axis bounds fresh on in-place updates too
