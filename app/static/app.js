@@ -347,7 +347,7 @@ async function loadPerformance() {
          + " " + d.toLocaleTimeString([], { hour: "numeric" });
   };
   const mkSeries = (snaps) => snaps.filter((s) => s.ts >= cutoff).map((s) => ({
-    x: fmtLabel(s.ts),
+    x: s.ts * 1000,                       // epoch ms -> real time spacing
     full: new Date(s.ts * 1000).toLocaleString(),
     y: +(s.realized + (s.value - s.cost)).toFixed(2),
   }));
@@ -360,27 +360,24 @@ async function loadPerformance() {
   const totalPts = dry.length + live.length;
   const sparse = (dry.length + live.length) <= 30;   // show dots when few points
   const dotRadius = sparse ? 3 : 0;
-  // Robust axis bounds: ignore extreme outliers (corrupt snapshots) so the
-  // real data fills the chart height instead of being crushed by one bad point.
-  const allY = [...dry, ...live].map((p) => p.y).filter((y) => isFinite(y)).sort((a, b) => a - b);
+  // Y bounds from the TRUE min/max of real data (corrupt points already purged
+  // server-side), with 8% padding top and bottom so genuine peaks and troughs
+  // — like a real spike — keep breathing room instead of hitting the edge.
+  const allY = [...dry, ...live].map((p) => p.y).filter((y) => isFinite(y));
   let yMin, yMax;
-  if (allY.length > 4) {
-    const pct = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor(arr.length * p)))];
-    const lo = pct(allY, 0.02), hi = pct(allY, 0.98);
-    const pad = Math.max((hi - lo) * 0.15, 10);   // more headroom so the line
-    yMin = lo - pad; yMax = hi + pad;             // never touches top/bottom edge
+  if (allY.length > 1) {
+    const lo = Math.min(...allY), hi = Math.max(...allY);
+    const pad = Math.max((hi - lo) * 0.08, 10);
+    yMin = lo - pad; yMax = hi + pad;
   }
-  const fullLabels = (dry.length >= live.length ? dry : live).map((p) => p.full);
   const pnlEmpty = $("pnl-empty");
   if (pnlEmpty) pnlEmpty.classList.toggle("hidden", totalPts >= 2);
   if (chartsVisible) {
-    const labels = (dry.length >= live.length ? dry : live).map((p) => p.x);
     // Update in place when the chart already exists (cheap, visibly extends the
     // line, no re-animation). Only build from scratch the first time.
     if (pnlChart) {
-      pnlChart.data.labels = labels;
-      pnlChart.data.datasets[0].data = dry.map((p) => p.y);
-      pnlChart.data.datasets[1].data = live.map((p) => p.y);
+      pnlChart.data.datasets[0].data = dry;
+      pnlChart.data.datasets[1].data = live;
       pnlChart.update("none");   // "none" = no animation, instant repaint
     } else {
       pnlChart = new Chart($("pnl-chart"), {
@@ -494,10 +491,12 @@ async function loadPerformance() {
   });
 }
 
-function chartOpts(legend = true, yMin, yMax, fullLabels) {
+function chartOpts(legend = true, yMin, yMax, fmt) {
   const grid = { color: C("--line") }, ticks = { color: C("--muted"), font: { family: "IBM Plex Mono", size: 10 } };
   const y = { grid, ticks: { ...ticks, padding: 6 } };
   if (yMin !== undefined) { y.min = yMin; y.max = yMax; }
+  const xTicks = { ...ticks, maxTicksLimit: 7, maxRotation: 0, minRotation: 0, padding: 6 };
+  if (fmt) xTicks.callback = (v) => fmt(v / 1000);   // v is epoch ms
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -508,12 +507,12 @@ function chartOpts(legend = true, yMin, yMax, fullLabels) {
       legend: { display: legend, labels: { color: C("--ink"), font: { family: "Barlow" } } },
       tooltip: {
         callbacks: {
-          title: (items) => (fullLabels && items[0] ? fullLabels[items[0].dataIndex] : ""),
+          title: (items) => (items[0] ? new Date(items[0].parsed.x).toLocaleString() : ""),
         },
       },
     },
     scales: {
-      x: { grid, ticks: { ...ticks, maxTicksLimit: 7, maxRotation: 0, minRotation: 0, autoSkip: true, padding: 6 } },
+      x: { type: "linear", grid, ticks: xTicks, bounds: "data" },
       y,
     },
   };
