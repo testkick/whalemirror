@@ -411,7 +411,7 @@ async function loadPerformance() {
       posChart = new Chart($("pos-chart"), {
         type: "bar",
         data: { labels: posLabels, datasets: [{ label: "P&L (USD)", data: posData, backgroundColor: posColors }] },
-        options: chartOpts(false),
+        options: barOpts(),
       });
     }
   }
@@ -490,6 +490,21 @@ async function loadPerformance() {
       } catch (e) { flash("err", e.message); }
     };
   });
+}
+
+function barOpts() {
+  const grid = { color: C("--line") }, ticks = { color: C("--muted"), font: { family: "IBM Plex Mono", size: 10 } };
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    layout: { padding: { right: 16, left: 4, top: 8, bottom: 4 } },
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid, ticks: { ...ticks, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } },
+      y: { grid, ticks: { ...ticks, padding: 6 } },
+    },
+  };
 }
 
 function chartOpts(legend = true, yMin, yMax, fmt) {
