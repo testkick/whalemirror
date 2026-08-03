@@ -33,7 +33,7 @@ _state = {"refreshing": False, "progress": "", "last_error": None, "auto_results
 SWEEP_MAX_SECS = 900        # a sweep may never occupy the slot longer than this
 PROGRESS_STALL_SECS = 300   # no progress update for this long == stalled
 TRACK_INTERVAL_SECS = 15    # re-price open positions every 15s (fast exits)
-_tracking = {"busy": False}  # guard so a slow tracking pass can't stack up
+_tracking = {"busy": False, "last_ok": 0.0, "last_result": None, "last_error": None}
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────
@@ -385,13 +385,15 @@ async def scheduler():
         if not _state["refreshing"] and time.time() - last > interval:
             _state.update(refreshing=True, progress="Scheduled refresh",
                           started_at=time.time(), progress_at=time.time())
-            try:
-                await asyncio.to_thread(_run_refresh)
-                _state["last_error"] = None
-            except Exception as e:  # noqa: BLE001
-                _state["last_error"] = str(e)
-            finally:
-                _state.update(refreshing=False, progress="")
+            async def _bg_sweep():
+                try:
+                    await asyncio.to_thread(_run_refresh)
+                    _state["last_error"] = None
+                except Exception as e:  # noqa: BLE001
+                    _state["last_error"] = str(e)
+                finally:
+                    _state.update(refreshing=False, progress="")
+            asyncio.create_task(_bg_sweep())   # fire-and-forget; loop keeps ticking
         if time.time() - last_housekeeping > 86400:
             last_housekeeping = time.time()
             try:
@@ -406,9 +408,11 @@ async def scheduler():
             last_track = time.time()
             _tracking["busy"] = True
             try:
-                await asyncio.to_thread(tracker.refresh_positions)
-            except Exception:  # noqa: BLE001 — tracking must never kill the loop
-                pass
+                _tracking["last_result"] = await asyncio.to_thread(tracker.refresh_positions)
+                _tracking["last_ok"] = time.time()
+                _tracking["last_error"] = None
+            except Exception as e:  # noqa: BLE001 — tracking must never kill the loop
+                _tracking["last_error"] = str(e)
             finally:
                 _tracking["busy"] = False
         await asyncio.sleep(5)    # loop tick; tracking gate (15s) controls actual cadence
@@ -490,8 +494,13 @@ def whale_detail(address: str, request: Request):
 
 @app.get("/healthz")
 def healthz():
+    tracking_age = round(time.time() - _tracking["last_ok"]) if _tracking["last_ok"] else None
     return {"ok": True, "signals": len(store.get_signals()),
-            "refreshing": _state["refreshing"], "db_mb": store.db_size_mb()}
+            "refreshing": _state["refreshing"], "db_mb": store.db_size_mb(),
+            "tracking_last_ok_secs_ago": tracking_age,
+            "tracking_last_result": _tracking["last_result"],
+            "tracking_last_error": _tracking["last_error"],
+            "snapshot_count": store.snapshot_count()}
 
 
 # ── Static ────────────────────────────────────────────────────────────────

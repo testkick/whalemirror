@@ -681,6 +681,11 @@ def housekeeping():
         conn.close()
 
 
+def snapshot_count() -> int:
+    with db() as conn:
+        return conn.execute("SELECT COUNT(*) c FROM pnl_snapshots").fetchone()["c"]
+
+
 def db_size_mb() -> float:
     try:
         return round(os.path.getsize(DB_PATH) / 1048576, 2)
@@ -1190,9 +1195,21 @@ def category_leaderboards(min_settled: int = 5) -> dict[str, list[dict]]:
         d["roi"] = round(r["pnl"] / r["invested"], 4) if r["invested"] else 0.0
         d["settled"] = settled
         d["followed"] = r["address"] in followed
-        # is this whale already restricted to (or including) this category?
         wc = prefs.get(r["address"], {}).get("categories") or []
-        d["followed_here"] = d["followed"] and (not wc or r["category"] in wc)
+        # three distinct states so the UI can show + toggle correctly:
+        #  "none"      – not followed at all
+        #  "all"       – followed with no category restriction (every category)
+        #  "this"      – followed and restricted to a set that includes this category
+        #  "other"     – followed but restricted to categories NOT including this one
+        if not d["followed"]:
+            d["follow_state"] = "none"
+        elif not wc:
+            d["follow_state"] = "all"
+        elif r["category"] in wc:
+            d["follow_state"] = "this"
+        else:
+            d["follow_state"] = "other"
+        d["followed_here"] = d["follow_state"] in ("all", "this")
         boards.setdefault(r["category"], []).append(d)
     for cat in boards:
         boards[cat].sort(key=lambda x: x["roi"], reverse=True)
