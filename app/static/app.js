@@ -791,6 +791,43 @@ $("wd-follow").onclick = async () => {
   loadWhales();
 };
 
+/* ── Per-category entry bands ──────────────────────────────────────── */
+function bandsToText(ranges) {
+  // [[0.25,0.49],[0.65,0.94]] -> "25-49, 65-94"
+  if (!ranges || !ranges.length) return "";
+  return ranges.map(([lo, hi]) => `${Math.round(lo*100)}-${Math.round(hi*100)}`).join(", ");
+}
+function textToBands(text) {
+  // "25-49, 65-94" -> [[0.25,0.49],[0.65,0.94]]; skips malformed pieces
+  const out = [];
+  for (const piece of (text || "").split(",")) {
+    const m = piece.trim().match(/^(\d{1,3})\s*-\s*(\d{1,3})$/);
+    if (!m) continue;
+    let lo = Math.max(0, Math.min(100, +m[1])) / 100;
+    let hi = Math.max(0, Math.min(100, +m[2])) / 100;
+    if (lo <= hi) out.push([lo, hi]);
+  }
+  return out;
+}
+function renderCatBands(categories, bands) {
+  const container = $("s-cat-bands");
+  container.innerHTML = categories.map((cat) => `
+    <div class="field-pair" style="align-items:center">
+      <label style="flex:0 0 130px">${esc(cat)}</label>
+      <input type="text" class="cat-band-input" data-cat="${esc(cat)}"
+             value="${esc(bandsToText(bands[cat]))}" placeholder="global"
+             style="flex:1" />
+    </div>`).join("");
+}
+function readCatBands() {
+  const out = {};
+  document.querySelectorAll(".cat-band-input").forEach((inp) => {
+    const ranges = textToBands(inp.value);
+    if (ranges.length) out[inp.dataset.cat] = ranges;   // empty = fall back to global
+  });
+  return out;
+}
+
 /* ── Settings ──────────────────────────────────────────────────────── */
 async function loadSettings() {
   const data = await api("/api/settings");
@@ -806,10 +843,12 @@ async function loadSettings() {
   $("s-min-entry").value = Math.round(settings.min_entry_price * 100);
   $("s-max-entry").value = Math.round(settings.max_entry_price * 100);
   $("s-max-days").value = settings.max_days_to_resolution;
+  $("s-use-cat-bands").checked = !!settings.use_category_bands;
   try {
     const cats = await api("/api/categories");
     allCategories = cats.categories;
     renderCatChips("s-categories", allCategories, cats.enabled);
+    renderCatBands(allCategories, settings.category_entry_bands || {});
   } catch (_) {}
   $("s-per-trade").value = settings.per_trade_usd;
   $("s-daily-cap").value = settings.daily_cap_usd;
@@ -846,6 +885,8 @@ $("save-settings").onclick = async () => {
       min_entry_price: +$("s-min-entry").value / 100,
       max_entry_price: +$("s-max-entry").value / 100,
       max_days_to_resolution: +$("s-max-days").value,
+      use_category_bands: $("s-use-cat-bands").checked,
+      category_entry_bands: readCatBands(),
       enabled_categories: readCatChips("s-categories", allCategories),
       per_trade_usd: +$("s-per-trade").value,
       daily_cap_usd: +$("s-daily-cap").value,

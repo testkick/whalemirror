@@ -136,14 +136,14 @@
     <div class="setup-section">
       <h3>Entry gates</h3>
       <div class="field-pair">
-        <label>Min entry price (¢)<input type="number" id="w-min-entry" value="0" min="0" max="99"></label>
-        <label>Max entry price (¢)<input type="number" id="w-max-entry" value="100" min="1" max="100"></label>
+        <label>Min entry price (¢)<input type="number" id="w-min-entry" value="10" min="0" max="99"></label>
+        <label>Max entry price (¢)<input type="number" id="w-max-entry" value="95" min="1" max="100"></label>
       </div>
       <div class="field-pair">
         <label>Time horizon: max days<input type="number" id="w-max-days" value="0" min="0"></label>
         <label>Stop-loss (% from entry)<input type="number" id="w-stop-pct" value="0" min="0" max="95"></label>
       </div>
-      <span class="hint">0 = off.</span>
+      <span class="hint">0 = off. Entry band is preset to the backtest winners (10-95¢, plus per-category bands in Settings) — edit anytime.</span>
     </div>
 
     <div class="setup-section">
@@ -382,7 +382,15 @@
           <div class="field-pair">
             <label>Time horizon: max days to resolution<input type="number" id="s-max-days" min="0" step="1"></label>
           </div>
-          <span class="hint">Entry band and horizon gate both auto and manual mirrors — skips are logged to Activity.</span>
+          <span class="hint">Global entry band applies to categories with no custom bands below. Horizon gate both auto and manual mirrors — skips logged to Activity.</span>
+
+          <div class="settings-subhead">Per-category entry bands</div>
+          <label class="switch-label" style="margin-bottom:8px">
+            <input type="checkbox" id="s-use-cat-bands"> Use per-category bands
+            <span class="hint">Preset from the backtest. When on, a category's custom bands override the global band; categories without custom bands use the global one.</span>
+          </label>
+          <div id="s-cat-bands"></div>
+          <p class="hint">Format: comma-separated ranges in cents, e.g. <code>25-49, 65-94</code>. Empty = use global band. These ship preset to the analysis winners; edit freely.</p>
         </div>
 
         <div class="card">
