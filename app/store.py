@@ -165,14 +165,30 @@ SETTINGS_DEFAULTS = {
     "default_floor_offset": 0.0,   # auto stop: entry − X (0 = off)
     "default_ceiling_offset": 0.0, # auto take-profit: entry + X (0 = off)
     "stop_loss_pct": 0.0,          # close if down N% from entry (0 = off)
-    "min_entry_price": 0.0,        # only mirror inside [min, max] price band
-    "max_entry_price": 1.0,
+    # Entry band. Global floor is analysis-driven: sub-10¢ deep longshots lose
+    # ~-69% ROI in EVERY category, so 0.10 is a universal hard floor at install.
+    "min_entry_price": 0.10,       # only mirror inside [min, max] price band
+    "max_entry_price": 0.95,       # 95¢+ heavy favorites barely profit / lose
     "max_days_to_resolution": 0,   # skip signals ending beyond N days (0 = off)
     "max_hold_days": 0,            # auto-close positions held longer (0 = off)
     "enabled_categories": [],      # [] = all categories allowed
+    # Per-category entry bands. Each category maps to a list of [lo, hi] price
+    # ranges that ARE mirrored; a signal in that category must fall inside one
+    # of its ranges. [] or missing = fall back to the global [min,max] band.
+    # Presets encode the 4-week backtest winners (see per_category_entry_analysis):
+    #   - mid 0.25-0.49 is the profitable core in every category
+    #   - coinflip 0.50-0.64 profits in Soccer/Esports, loses in Sports/Tennis
+    #   - favorites 0.65-0.94 profit everywhere EXCEPT Tennis
+    #   - Tennis: keep ONLY its strong mid band, cut its favorites+coinflips
+    "category_entry_bands": {
+        "Soccer":  [[0.10, 0.95]],               # all bands positive; just the global floor
+        "Sports":  [[0.25, 0.49], [0.65, 0.94]],  # skip its coinflip dead zone
+        "Esports": [[0.10, 0.64]],               # value+mid+coin good; favorites flat
+        "Tennis":  [[0.25, 0.49]],               # ONLY the +24.6% mid band
+    },
+    "use_category_bands": True,    # master toggle for the per-category band logic
     "setup_complete": False,       # first-run wizard gate
     "mirroring_paused": False,     # master switch: blocks all mirroring
-    "enabled_categories": [],      # [] = all categories allowed
     "onboarded": False,            # first-run setup completed
     "min_score_to_mirror": 8.0,
     "min_score_followed": 0.0,     # separate (lower) floor for followed-whale solo bets
@@ -181,6 +197,46 @@ SETTINGS_DEFAULTS = {
     "min_whales": 3,
     "dominance": 0.75,
 }
+
+
+def _clean_bands(bands) -> dict:
+    """Validate a category->[[lo,hi],...] band map. Drops malformed entries,
+    clamps to [0,1], ensures lo<=hi. Empty list for a category = use global."""
+    out = {}
+    if not isinstance(bands, dict):
+        return out
+    for cat, ranges in bands.items():
+        clean = []
+        if isinstance(ranges, list):
+            for r in ranges:
+                try:
+                    lo, hi = float(r[0]), float(r[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                lo = max(0.0, min(1.0, lo)); hi = max(0.0, min(1.0, hi))
+                if lo <= hi:
+                    clean.append([round(lo, 4), round(hi, 4)])
+        out[str(cat)] = clean
+    return out
+
+
+def entry_band_allows(category: str, price: float, settings: dict) -> tuple[bool, str]:
+    """Does `price` pass the entry band for this category?
+    Per-category bands take precedence when enabled and defined for the category;
+    otherwise fall back to the global [min_entry_price, max_entry_price]."""
+    if settings.get("use_category_bands"):
+        bands = (settings.get("category_entry_bands") or {}).get(category)
+        if bands:  # category has explicit ranges
+            for lo, hi in bands:
+                if lo <= price <= hi:
+                    return True, ""
+            pretty = ", ".join(f"{lo:.2f}-{hi:.2f}" for lo, hi in bands)
+            return False, f"{category} entry band: {price:.3f} outside [{pretty}]"
+    lo = settings.get("min_entry_price", 0.0)
+    hi = settings.get("max_entry_price", 1.0)
+    if lo <= price <= hi:
+        return True, ""
+    return False, f"entry band: price {price:.3f} outside [{lo:.2f}, {hi:.2f}]"
 
 
 def get_settings() -> dict:
@@ -194,6 +250,8 @@ def save_settings(patch: dict):
     allowed = {k: patch[k] for k in patch if k in SETTINGS_DEFAULTS}
     if allowed.get("enabled_categories") is not None and "enabled_categories" in allowed:
         allowed["enabled_categories"] = [str(c) for c in allowed["enabled_categories"]][:20]
+    if "category_entry_bands" in allowed:
+        allowed["category_entry_bands"] = _clean_bands(allowed["category_entry_bands"])
     merged = {**get_settings(), **allowed}
     with db() as conn:
         conn.execute("INSERT OR REPLACE INTO kv (k, v) VALUES ('settings', ?)",

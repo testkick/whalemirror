@@ -97,13 +97,16 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
     if settings.get("mirroring_paused"):
         return fail("skipped", "mirroring is paused")
     price_now = signal["current_price"]
-    lo, hi = settings["min_entry_price"], settings["max_entry_price"]
-    if not (lo <= price_now <= hi):
-        return fail("skipped", f"entry band: price {price_now:.3f} outside [{lo:.2f}, {hi:.2f}]", price_now)
     cat = store.classify_category(signal.get("title"), signal.get("category"))
     enabled_cats = settings.get("enabled_categories") or []
     if enabled_cats and cat not in enabled_cats:
         return fail("skipped", f"category filter: '{cat}' not in enabled categories")
+
+    # Entry band — per-category if configured, else the global band. Encodes the
+    # backtest: universal 10¢ floor, plus category-specific profitable ranges.
+    ok, why = store.entry_band_allows(cat, price_now, settings)
+    if not ok:
+        return fail("skipped", why, price_now)
 
     # Per-whale category filter. For a FOLLOWED SOLO signal, honor that whale's
     # allowed categories. For CONSENSUS, only block if EVERY co-signer is
