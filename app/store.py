@@ -187,6 +187,13 @@ SETTINGS_DEFAULTS = {
         "Tennis":  [[0.25, 0.49]],               # ONLY the +24.6% mid band
     },
     "use_category_bands": True,    # master toggle for the per-category band logic
+    "use_whale_weights": False,    # SHADOW by default — weights compute + display but
+                                   # do NOT feed the live consensus score until the
+                                   # out-of-sample validation passes and you opt in.
+    "skip_in_game": True,          # skip mirroring bets on games already in progress
+    "in_game_unknown_policy": "allow",  # when live-state is unknown: "allow" (fail-open,
+                                        # flagged) or "skip" (fail-closed). Default allow so
+                                        # a dropped sports feed never silently halts sports.
     "setup_complete": False,       # first-run wizard gate
     "mirroring_paused": False,     # master switch: blocks all mirroring
     "onboarded": False,            # first-run setup completed
@@ -1301,3 +1308,63 @@ def category_leaderboards(min_settled: int = 5) -> dict[str, list[dict]]:
     for cat in boards:
         boards[cat].sort(key=lambda x: x["roi"], reverse=True)
     return boards
+
+
+def whale_weight_rows(mode: str = "dry_run", since: float | None = None) -> list[dict]:
+    """Settled positions with whale attribution, for weight computation.
+    One row per (position, whale) — a position co-signed by 3 whales yields 3
+    rows, attributing the result to each. This is OUR mirror record, the clean
+    (if smaller) sample. `since` optionally limits to recent bets."""
+    q = """
+        SELECT pw.address, pw.name, p.pnl, p.usd, p.closed_ts, p.ts, p.category
+        FROM position_whales pw JOIN positions p ON p.id = pw.position_id
+        WHERE p.status IN ('won','lost','sold') AND p.mode = ?
+    """
+    args = [mode]
+    if since is not None:
+        q += " AND p.closed_ts >= ?"
+        args.append(since)
+    with db() as conn:
+        return [dict(r) for r in conn.execute(q, args).fetchall()]
+
+
+def compute_whale_weights(mode: str = "dry_run") -> dict:
+    """Compute shadow whale weights from our mirror record. Returns the ranking
+    plus metadata. Does NOT modify anything the engine reads — shadow only."""
+    from . import whaleweight
+    rows = whale_weight_rows(mode)
+    weights = whaleweight.compute_weights(rows)
+    ranked = whaleweight.rank(weights)
+    return {
+        "weights": weights,
+        "ranked": ranked,
+        "total_attributed_bets": len(rows),
+        "rankable_count": len(ranked),
+        "params": {
+            "shrinkage_strength": whaleweight.SHRINKAGE_STRENGTH,
+            "half_life_days": whaleweight.HALF_LIFE_DAYS,
+            "min_bets_to_rank": whaleweight.MIN_BETS_TO_RANK,
+            "weight_bounds": [whaleweight.WEIGHT_FLOOR, whaleweight.WEIGHT_CEIL],
+        },
+    }
+
+
+def whale_weight_validation(mode: str = "dry_run", split_ts: float | None = None) -> dict:
+    """Out-of-sample check: weight whales on bets BEFORE split_ts, test on bets
+    AFTER. If split_ts is None, use the median closed_ts so train/test are
+    balanced. This is the gate that must pass before weights touch the live score."""
+    from . import whaleweight
+    rows = whale_weight_rows(mode)
+    settled = [r for r in rows if r.get("closed_ts")]
+    if len(settled) < 40:
+        return {"ok": False, "reason": f"only {len(settled)} attributed settled bets; need more history"}
+    if split_ts is None:
+        ts_sorted = sorted(r["closed_ts"] for r in settled)
+        split_ts = ts_sorted[len(ts_sorted) // 2]
+    train = [r for r in settled if r["closed_ts"] < split_ts]
+    test = [r for r in settled if r["closed_ts"] >= split_ts]
+    result = whaleweight.out_of_sample_check(train, test)
+    result["train_bets"] = len(train)
+    result["test_bets"] = len(test)
+    result["split_ts"] = split_ts
+    return result

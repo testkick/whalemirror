@@ -223,6 +223,21 @@ def set_whale_cats(address: str, body: WhaleCatsBody, request: Request):
             "prefs": store.followed_whale_prefs()}
 
 
+@app.get("/api/whales/weights")
+def whale_weights(request: Request):
+    require_session(request)
+    data = store.compute_whale_weights()
+    # shadow status: is the weighting currently allowed to touch the live score?
+    data["live_enabled"] = bool(store.get_settings().get("use_whale_weights"))
+    return data
+
+
+@app.get("/api/whales/weights/validation")
+def whale_weights_validation(request: Request):
+    require_session(request)
+    return store.whale_weight_validation()
+
+
 @app.get("/api/whales/category-leaders")
 def category_leaders(request: Request, min_settled: int = 5):
     require_session(request)
@@ -442,6 +457,27 @@ async def startup():
     except Exception:  # noqa: BLE001
         pass
     asyncio.create_task(scheduler())
+    # Live-sports state: start the Gamma-map sync + WS consumer (Option B).
+    try:
+        from .livestate import tracker as _live
+        import requests as _rq
+        def _fetch_sports_markets():
+            # Pull active markets that carry a gameId (sports). Gamma paginates;
+            # a few hundred covers the live slate. Tolerant of field-name variants.
+            out = []
+            try:
+                r = _rq.get("https://gamma-api.polymarket.com/markets",
+                            params={"closed":"false","limit":500,"order":"volume","ascending":"false"},
+                            timeout=15)
+                if r.status_code == 200:
+                    out = r.json() or []
+            except Exception:  # noqa: BLE001
+                pass
+            return out
+        asyncio.create_task(_live.run_gamma_sync(_fetch_sports_markets))
+        asyncio.create_task(_live.run_ws_consumer())
+    except Exception as e:  # noqa: BLE001
+        print(f"live-state tasks failed to start: {e}")
 
 
 @app.get("/api/performance")
@@ -494,6 +530,14 @@ def whale_detail(address: str, request: Request):
     return detail
 
 
+def _live_health():
+    try:
+        from .livestate import tracker as _live
+        return _live.health()
+    except Exception:  # noqa: BLE001
+        return {"error": "livestate unavailable"}
+
+
 @app.get("/healthz")
 def healthz():
     tracking_age = round(time.time() - _tracking["last_ok"]) if _tracking["last_ok"] else None
@@ -509,7 +553,8 @@ def healthz():
             "db_path": diag["db_path"],
             "db_on_volume": diag["db_on_volume"],
             "scheduler_alive_secs_ago": (round(time.time() - _sched_heartbeat["ts"])
-                                         if _sched_heartbeat["ts"] else None)}
+                                         if _sched_heartbeat["ts"] else None),
+            "live_state": _live_health()}
 
 
 # ── Static ────────────────────────────────────────────────────────────────
