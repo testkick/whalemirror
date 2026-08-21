@@ -108,6 +108,19 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
     if not ok:
         return fail("skipped", why, price_now)
 
+    # In-game filter — the single biggest edge in the backtest (pregame +6% vs
+    # in-play -3.6%). Live state comes from the sports WS consumer (livestate).
+    # FAIL-OPEN by default: an unknown state (feed down / market unmapped) still
+    # mirrors, but is flagged, so a dropped socket never silently halts sports.
+    if settings.get("skip_in_game"):
+        from .livestate import tracker as _live
+        is_live, live_reason = _live.is_live(signal["condition_id"])
+        if is_live is True:
+            return fail("skipped", f"in-game: game in progress ({live_reason})", price_now)
+        if is_live is None and settings.get("in_game_unknown_policy") == "skip":
+            return fail("skipped", f"in-game: live state unknown, failing closed ({live_reason})", price_now)
+        # is_live False (pregame/ended) or None+allow -> proceed
+
     # Per-whale category filter. For a FOLLOWED SOLO signal, honor that whale's
     # allowed categories. For CONSENSUS, only block if EVERY co-signer is
     # restricted away from this category (i.e. no followed co-signer allows it,
