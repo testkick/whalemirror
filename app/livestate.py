@@ -77,6 +77,14 @@ class LiveStateTracker:
                                 if h["last_ws_msg_ts"] else None)
         h["gamma_sync_age_secs"] = (round(time.time() - h["last_gamma_sync_ts"])
                                     if h["last_gamma_sync_ts"] else None)
+        # Do the WS gameIds and the Gamma game-keys share format? This is the
+        # crux: if these two keyspaces don't overlap, mapping is 0 and the
+        # filter can't gate. Surface the overlap directly.
+        ws_ids = set((h.get("ws_diag") or {}).get("sample_game_ids") or [])
+        gamma_keys = set((h.get("gamma_diag") or {}).get("sample_game_keys") or [])
+        h["keyspace_overlap"] = sorted(ws_ids & gamma_keys)
+        h["ws_key_format"] = next(iter(ws_ids), None)
+        h["gamma_key_format"] = next(iter(gamma_keys), None)
         return h
 
     # ── ingestion (called by the WS consumer; separated for testability) ──
@@ -93,23 +101,84 @@ class LiveStateTracker:
             "ts": time.time(),
         }
         self._health["last_ws_msg_ts"] = time.time()
+        # sample the WS gameId format + any co-keys, to compare against Gamma
+        diag = self._health.setdefault("ws_diag", {"sample_game_ids": [], "sample_msg_keys": []})
+        if len(diag["sample_game_ids"]) < 5 and gid not in diag["sample_game_ids"]:
+            diag["sample_game_ids"].append(gid)
+        if not diag["sample_msg_keys"] and isinstance(msg, dict):
+            diag["sample_msg_keys"] = sorted(msg.keys())[:25]
+
+    @staticmethod
+    def _extract_game_key(m: dict) -> str | None:
+        """Find a game identifier on a Gamma market, trying several shapes:
+          1. top-level gameId variants
+          2. a game/event slug of the form {league}-{away}-{home}-{date}
+             (e.g. 'nfl-nyj-pit-2026-08-21'), found top-level or in events[]
+          3. an event id/ticker inside the events[] array
+        Returns the normalized game key, or None for non-game markets (futures,
+        awards, props — which correctly never map)."""
+        import re
+        slug_re = re.compile(r"^[a-z]{2,4}-[a-z]{2,4}-[a-z]{2,4}-\d{4}-\d{2}-\d{2}$")
+
+        # 1. explicit top-level game id
+        for k in ("gameId", "game_id", "gameID"):
+            v = m.get(k)
+            if v:
+                return str(v)
+
+        # 2. slug pattern, top-level
+        for k in ("slug", "gameSlug", "eventSlug"):
+            v = m.get(k)
+            if v and slug_re.match(str(v)):
+                return str(v)
+
+        # 3. dig into events[]
+        for ev in (m.get("events") or []):
+            if not isinstance(ev, dict):
+                continue
+            for k in ("gameId", "game_id", "gameID"):
+                v = ev.get(k)
+                if v:
+                    return str(v)
+            for k in ("slug", "ticker"):
+                v = ev.get(k)
+                if v and slug_re.match(str(v)):
+                    return str(v)
+        return None
 
     def apply_gamma_catalog(self, markets: list[dict]) -> None:
-        """Rebuild the gameId<->condition_id maps from a Gamma markets dump.
-        Each market may carry a gameId and a conditionId; we index both ways."""
+        """Rebuild the gameKey<->condition_id maps from a Gamma markets dump,
+        plus capture diagnostics so /healthz can reveal the real data shape."""
         cid_to_game, game_to_cids = {}, {}
-        for m in markets:
+        # diagnostics
+        sample_keys, slug_examples, with_events, with_gameid = [], [], 0, 0
+        for i, m in enumerate(markets):
+            if i == 0 and isinstance(m, dict):
+                sample_keys = sorted(m.keys())[:40]
+            if m.get("events"):
+                with_events += 1
+            if any(m.get(k) for k in ("gameId", "game_id", "gameID")):
+                with_gameid += 1
             cid = m.get("conditionId") or m.get("condition_id")
-            gid = m.get("gameId") or m.get("game_id") or m.get("gameID")
+            gid = self._extract_game_key(m)
+            if gid and len(slug_examples) < 5:
+                slug_examples.append(gid)
             if not cid or not gid:
                 continue
-            gid = str(gid)
             cid_to_game[cid] = gid
             game_to_cids.setdefault(gid, set()).add(cid)
-        # atomic swap so readers never see a half-built map
         self._cid_to_game = cid_to_game
         self._game_to_cids = game_to_cids
         self._health["last_gamma_sync_ts"] = time.time()
+        # expose what the sync actually saw, so we can fix mapping from fact
+        self._health["gamma_diag"] = {
+            "markets_seen": len(markets),
+            "markets_with_events_field": with_events,
+            "markets_with_gameid_field": with_gameid,
+            "game_keys_extracted": len(cid_to_game),
+            "sample_market_keys": sample_keys,
+            "sample_game_keys": slug_examples,
+        }
 
     # ── background tasks ──────────────────────────────────────────────────
     async def run_gamma_sync(self, fetch_markets) -> None:
