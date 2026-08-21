@@ -152,6 +152,26 @@ class LiveStateTracker:
         cid_to_game, game_to_cids = {}, {}
         # diagnostics
         sample_keys, slug_examples, with_events, with_gameid = [], [], 0, 0
+        game_market_dump = None
+
+        def _id_like(d, prefix=""):
+            """Collect every field whose key or value looks like an id, so we can
+            spot a 6065514-style WS gameId wherever it hides."""
+            out = {}
+            if not isinstance(d, dict):
+                return out
+            for k, v in d.items():
+                kl = k.lower()
+                if any(w in kl for w in ("id", "game", "event", "slug", "ticker", "start")):
+                    # keep scalars; note nested dicts/lists shallowly
+                    if isinstance(v, (str, int, float, bool)) or v is None:
+                        out[prefix + k] = v
+                    elif isinstance(v, dict):
+                        out[prefix + k] = f"<dict keys={sorted(v.keys())[:12]}>"
+                    elif isinstance(v, list):
+                        out[prefix + k] = f"<list len={len(v)}>"
+            return out
+
         for i, m in enumerate(markets):
             if i == 0 and isinstance(m, dict):
                 sample_keys = sorted(m.keys())[:40]
@@ -159,6 +179,23 @@ class LiveStateTracker:
                 with_events += 1
             if any(m.get(k) for k in ("gameId", "game_id", "gameID")):
                 with_gameid += 1
+
+            # Deep-dump the FIRST market that looks like an actual game (has a
+            # gameStartTime, or a league-team-team-date slug). This is where the
+            # real join key should be if it exists.
+            if game_market_dump is None and isinstance(m, dict):
+                looks_game = bool(m.get("gameStartTime")) or bool(
+                    self._extract_game_key(m))
+                if looks_game:
+                    dump = {"market_id_fields": _id_like(m),
+                            "gameStartTime": m.get("gameStartTime"),
+                            "question": str(m.get("question") or "")[:60]}
+                    evs = m.get("events") or []
+                    if evs and isinstance(evs[0], dict):
+                        dump["event0_id_fields"] = _id_like(evs[0])
+                        dump["event0_all_keys"] = sorted(evs[0].keys())[:40]
+                    game_market_dump = dump
+
             cid = m.get("conditionId") or m.get("condition_id")
             gid = self._extract_game_key(m)
             if gid and len(slug_examples) < 5:
@@ -178,6 +215,7 @@ class LiveStateTracker:
             "game_keys_extracted": len(cid_to_game),
             "sample_market_keys": sample_keys,
             "sample_game_keys": slug_examples,
+            "game_market_dump": game_market_dump,
         }
 
     # ── background tasks ──────────────────────────────────────────────────
