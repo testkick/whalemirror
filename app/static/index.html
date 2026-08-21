@@ -282,6 +282,7 @@
       <div class="range-toggle" style="margin-bottom:14px">
         <button class="chip on" id="w-view-overall">Overall</button>
         <button class="chip" id="w-view-category">By category</button>
+        <button class="chip" id="w-view-weights">Weights (shadow)</button>
       </div>
       <div id="w-overall">
       <p class="hint" style="margin-bottom:12px">Whales ranked by <b>our</b> results when they co-signed a mirrored signal. Attribution starts from positions opened after this deploy.</p>
@@ -301,6 +302,16 @@
       <div id="w-category" class="hidden">
         <p class="hint" style="margin-bottom:12px">Best whales <b>in each category</b> by our ROI. Whales need ≥5 settled bets in a category to rank. Star lets you follow them <b>for that category only</b>.</p>
         <div id="category-leaders"></div>
+      </div>
+
+      <div id="w-weights" class="hidden">
+        <div id="weights-status" class="card" style="margin-bottom:12px"></div>
+        <div id="weights-validation" class="card" style="margin-bottom:12px"></div>
+        <table class="activity-table" id="weights-table">
+          <thead><tr><th>Whale</th><th class="num">Bets</th><th class="num">Raw ROI</th>
+            <th class="num">Shrunk ROI</th><th class="num">Weight</th></tr></thead>
+          <tbody id="weights-body"></tbody>
+        </table>
       </div>
     </section>
 

@@ -568,12 +568,58 @@ function setWhaleView(v) {
   whaleView = v;
   $("w-view-overall").classList.toggle("on", v === "overall");
   $("w-view-category").classList.toggle("on", v === "category");
+  $("w-view-weights").classList.toggle("on", v === "weights");
   $("w-overall").classList.toggle("hidden", v !== "overall");
   $("w-category").classList.toggle("hidden", v !== "category");
+  $("w-weights").classList.toggle("hidden", v !== "weights");
   if (v === "category") loadCategoryLeaders();
+  if (v === "weights") loadWhaleWeights();
 }
 $("w-view-overall").onclick = () => setWhaleView("overall");
 $("w-view-category").onclick = () => setWhaleView("category");
+$("w-view-weights").onclick = () => setWhaleView("weights");
+
+async function loadWhaleWeights() {
+  const [data, val] = await Promise.all([
+    api("/api/whales/weights"),
+    api("/api/whales/weights/validation").catch(() => null),
+  ]);
+  // status banner — shadow vs live
+  const st = $("weights-status");
+  st.innerHTML = `
+    <h2>Whale weights — ${data.live_enabled ? "<span style='color:var(--sonar)'>LIVE on score</span>" : "SHADOW (not affecting mirrors)"}</h2>
+    <p class="hint">Computed from ${data.total_attributed_bets} attributed settled bets. ${data.rankable_count} whales have ≥${data.params.min_bets_to_rank} bets and are rankable. Weights are Bayesian-shrunk toward the population mean (strength ${data.params.shrinkage_strength}), ROI-based, decayed (${data.params.half_life_days}d half-life), bounded ${data.params.weight_bounds[0]}–${data.params.weight_bounds[1]}.</p>`;
+
+  // validation verdict
+  const v = $("weights-validation");
+  if (!val || !val.ok) {
+    v.innerHTML = `<h2>Out-of-sample check</h2><p class="hint">${esc((val && val.reason) || "Not enough data yet to validate. Keep collecting.")}</p>`;
+  } else {
+    const good = val.predicts;
+    v.innerHTML = `
+      <h2>Out-of-sample check ${good ? "✓" : "✗"}</h2>
+      <p class="hint">Trained on ${val.train_bets} earlier bets, tested on ${val.test_bets} later ones the whales weren't scored on. Top-weighted whales' held-out ROI: <b>${val.top_half_test_roi ?? "—"}%</b> vs bottom-weighted: <b>${val.bottom_half_test_roi ?? "—"}%</b> (spread ${val.spread ?? "—"}).</p>
+      <p style="color:${good ? "var(--sonar)" : "var(--muted)"}"><b>${esc(val.verdict)}</b></p>
+      ${good ? `<p class="hint">The weighting has earned its way onto the live score. You can enable it in Settings → Fine-tuning when ready.</p>` : ""}`;
+  }
+
+  // ranking table
+  const body = $("weights-body");
+  if (!data.ranked.length) {
+    body.innerHTML = `<tr><td colspan="5" class="empty">No whale has ≥${data.params.min_bets_to_rank} attributed settled bets yet.</td></tr>`;
+    return;
+  }
+  body.innerHTML = data.ranked.map((w) => `
+    <tr>
+      <td><span class="whale-link" data-wopen="${esc(w.address)}">${esc(w.name)}</span></td>
+      <td class="num">${w.bets}</td>
+      <td class="num ${pnlCls(w.raw_roi)}">${w.raw_roi}%</td>
+      <td class="num ${pnlCls(w.shrunk_roi)}">${w.shrunk_roi}%</td>
+      <td class="num"><b>${w.weight}</b></td>
+    </tr>`).join("");
+  body.querySelectorAll("[data-wopen]").forEach((el) =>
+    el.onclick = () => openWhale(el.dataset.wopen));
+}
 
 function catFollowButton(w, cat) {
   const st = w.follow_state || (w.followed_here ? "all" : "none");
