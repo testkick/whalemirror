@@ -292,6 +292,32 @@ const pnlCls = (n) => (n >= 0 ? "pnl-pos" : "pnl-neg");
 
 function tabVisible(name) { return !$("tab-" + name).classList.contains("hidden"); }
 
+const SHADOW_NAMES = {
+  entry_band: "Entry band", category_disabled: "Category off",
+  whale_category: "Whale category", in_game: "In-game", time_horizon: "Time horizon",
+};
+function shadowPnlColor(pnl) {
+  // positive hypo P&L is BAD (cutting winners) -> amber; negative is good -> sonar
+  return pnl > 1 ? "var(--amber)" : pnl < -1 ? "var(--sonar)" : "var(--muted)";
+}
+function shadowVerdictColor(v) {
+  if (v.startsWith("CUTTING")) return "var(--amber)";
+  if (v.startsWith("too few")) return "var(--muted)";
+  return "var(--sonar)";
+}
+function shadowSubRows(items, labelKey) {
+  // renders category / band breakdown rows, indented
+  return items.map((it) => `
+    <tr class="shadow-sub">
+      <td style="padding-left:28px;color:var(--muted)">${esc(it[labelKey])}</td>
+      <td class="num">${it.skipped_total}</td>
+      <td class="num">${it.resolved}</td>
+      <td class="num">${it.hypo_win_rate == null ? "—" : it.hypo_win_rate + "%"}</td>
+      <td class="num" style="color:${shadowPnlColor(it.hypo_pnl)}">${it.hypo_pnl > 0 ? "+" : ""}$${it.hypo_pnl}</td>
+      <td style="color:${shadowVerdictColor(it.verdict)};font-size:0.85em">${esc(it.verdict)}</td>
+    </tr>`).join("");
+}
+
 async function loadShadowReport() {
   let rep;
   try { rep = await api("/api/skipped-shadow"); } catch (_) { return; }
@@ -302,23 +328,44 @@ async function loadShadowReport() {
     body.innerHTML = `<tr><td colspan="6" class="empty">No skipped bets have matured yet. As markets you skipped resolve, this fills in — usually a few days.</td></tr>`;
     return;
   }
-  const nameMap = {
-    entry_band: "Entry band", category_disabled: "Category off",
-    whale_category: "Whale category", in_game: "In-game", time_horizon: "Time horizon",
-  };
-  body.innerHTML = filters.map((f) => {
-    const cls = f.hypo_pnl > 1 ? "neg" : f.hypo_pnl < -1 ? "pos" : "";
-    // NOTE: positive hypo_pnl is BAD (cutting winners) -> render amber/red
-    const verdictColor = f.hypo_pnl > 1 ? "var(--amber)" : "var(--muted)";
-    return `<tr>
-      <td>${esc(nameMap[f.filter] || f.filter)}</td>
-      <td class="num">${f.skipped_total}</td>
-      <td class="num">${f.resolved}</td>
-      <td class="num">${f.hypo_win_rate == null ? "—" : f.hypo_win_rate + "%"}</td>
-      <td class="num" style="color:${f.hypo_pnl > 1 ? "var(--amber)" : "var(--sonar)"}">${f.hypo_pnl > 0 ? "+" : ""}$${f.hypo_pnl}</td>
-      <td style="color:${verdictColor}">${esc(f.verdict)}</td>
-    </tr>`;
+  body.innerHTML = filters.map((f, i) => {
+    const name = SHADOW_NAMES[f.filter] || f.filter;
+    // only show breakdowns worth showing (more than one category or band)
+    const cats = (f.by_category || []).filter((c) => c.resolved > 0);
+    const bands = (f.by_band || []).filter((b) => b.resolved > 0);
+    const hasDetail = cats.length > 1 || bands.length > 1;
+    const parent = `
+      <tr class="shadow-parent" data-si="${i}" style="cursor:${hasDetail ? "pointer" : "default"}">
+        <td>${hasDetail ? "▸ " : ""}${esc(name)}</td>
+        <td class="num">${f.skipped_total}</td>
+        <td class="num">${f.resolved}</td>
+        <td class="num">${f.hypo_win_rate == null ? "—" : f.hypo_win_rate + "%"}</td>
+        <td class="num" style="color:${shadowPnlColor(f.hypo_pnl)}">${f.hypo_pnl > 0 ? "+" : ""}$${f.hypo_pnl}</td>
+        <td style="color:${shadowVerdictColor(f.verdict)}">${esc(f.verdict)}</td>
+      </tr>`;
+    let detail = "";
+    if (hasDetail) {
+      detail = `<tr class="shadow-detail hidden" data-di="${i}"><td colspan="6" style="padding:0">
+        <table class="activity-table" style="margin:4px 0 10px 0">
+          ${cats.length > 1 ? `<tr><td colspan="6" style="color:var(--sonar);font-size:0.8em;padding-left:28px">BY CATEGORY</td></tr>` + shadowSubRows(cats, "category") : ""}
+          ${bands.length > 1 ? `<tr><td colspan="6" style="color:var(--sonar);font-size:0.8em;padding-left:28px">BY ENTRY PRICE</td></tr>` + shadowSubRows(bands, "band") : ""}
+        </table></td></tr>`;
+    }
+    return parent + detail;
   }).join("");
+
+  // expand/collapse
+  body.querySelectorAll(".shadow-parent").forEach((row) => {
+    row.onclick = () => {
+      const i = row.dataset.si;
+      const d = body.querySelector(`.shadow-detail[data-di="${i}"]`);
+      if (d) {
+        d.classList.toggle("hidden");
+        const cell = row.querySelector("td");
+        cell.textContent = cell.textContent.replace(/^[▸▾]\s/, d.classList.contains("hidden") ? "▸ " : "▾ ");
+      }
+    };
+  });
 }
 
 async function loadPerformance() {
