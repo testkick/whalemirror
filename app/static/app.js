@@ -292,8 +292,37 @@ const pnlCls = (n) => (n >= 0 ? "pnl-pos" : "pnl-neg");
 
 function tabVisible(name) { return !$("tab-" + name).classList.contains("hidden"); }
 
+async function loadShadowReport() {
+  let rep;
+  try { rep = await api("/api/skipped-shadow"); } catch (_) { return; }
+  const body = $("shadow-body");
+  if (!body) return;
+  const filters = (rep.filters || []).filter((f) => f.resolved > 0);
+  if (!filters.length) {
+    body.innerHTML = `<tr><td colspan="6" class="empty">No skipped bets have matured yet. As markets you skipped resolve, this fills in — usually a few days.</td></tr>`;
+    return;
+  }
+  const nameMap = {
+    entry_band: "Entry band", category_disabled: "Category off",
+    whale_category: "Whale category", in_game: "In-game", time_horizon: "Time horizon",
+  };
+  body.innerHTML = filters.map((f) => {
+    const cls = f.hypo_pnl > 1 ? "neg" : f.hypo_pnl < -1 ? "pos" : "";
+    // NOTE: positive hypo_pnl is BAD (cutting winners) -> render amber/red
+    const verdictColor = f.hypo_pnl > 1 ? "var(--amber)" : "var(--muted)";
+    return `<tr>
+      <td>${esc(nameMap[f.filter] || f.filter)}</td>
+      <td class="num">${f.skipped_total}</td>
+      <td class="num">${f.resolved}</td>
+      <td class="num">${f.hypo_win_rate == null ? "—" : f.hypo_win_rate + "%"}</td>
+      <td class="num" style="color:${f.hypo_pnl > 1 ? "var(--amber)" : "var(--sonar)"}">${f.hypo_pnl > 0 ? "+" : ""}$${f.hypo_pnl}</td>
+      <td style="color:${verdictColor}">${esc(f.verdict)}</td>
+    </tr>`;
+  }).join("");
+}
+
 async function loadPerformance() {
-  const data = await api("/api/performance");
+  const data = await api("/api/performance?range=" + encodeURIComponent(chartRange));
   const chartsVisible = tabVisible("performance");
   const d = data.summary.dry_run, l = data.summary.live;
   const total = d.total + l.total;
@@ -372,6 +401,7 @@ async function loadPerformance() {
   }
   const pnlEmpty = $("pnl-empty");
   if (pnlEmpty) pnlEmpty.classList.toggle("hidden", totalPts >= 2);
+  loadShadowReport();
   if (chartsVisible) {
     // Update in place when the chart already exists (cheap, visibly extends the
     // line, no re-animation). Only build from scratch the first time.

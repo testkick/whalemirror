@@ -263,6 +263,15 @@
         <h2>P&L by position</h2>
         <canvas id="pos-chart" height="90"></canvas>
       </div>
+      <div class="card chart-card">
+        <h2>Filter effectiveness (skipped-bet shadow)</h2>
+        <p class="hint" style="margin-bottom:12px">Of the bets each filter skipped, what would they have done if taken? <b>Negative hypo P&amp;L = the filter is correctly cutting losers.</b> Positive = it may be cutting winners; consider loosening. Only resolved (matured) skips count.</p>
+        <table class="activity-table" id="shadow-table">
+          <thead><tr><th>Filter</th><th class="num">Skipped</th><th class="num">Resolved</th>
+            <th class="num">Would-win %</th><th class="num">Hypo P&L</th><th>Verdict</th></tr></thead>
+          <tbody id="shadow-body"></tbody>
+        </table>
+      </div>
       <div id="performance-empty" class="empty hidden">No tracked positions yet — mirror a signal (dry run counts) and the tracker will start marking it to market.</div>
       <div class="filter-bar">
         <button class="chip" data-pf="open">Open</button>
