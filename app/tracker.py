@@ -173,3 +173,28 @@ def whale_exit_check(fresh_signals: list[dict], required_misses: int = 2) -> lis
             if pos and pos["status"] == "open":
                 results.append(mirror.execute_sell(pos, reason="whale exit"))
     return results
+
+
+def resolve_shadow_skips(limit: int = 100) -> dict:
+    """Check pending skipped-bet shadows: has the market resolved, and would the
+    skipped bet have won? Uses the same /markets winner-detection as positions.
+    Cheap and bounded per call; runs on the tracking cadence."""
+    from . import store
+    pending = store.pending_shadow_skips(limit=limit)
+    checked = resolved = 0
+    for row in pending:
+        cid = row.get("condition_id")
+        if not cid:
+            continue
+        checked += 1
+        market = _fetch_market(cid)
+        if not market or not market.get("closed"):
+            continue   # not matured yet; leave pending
+        tokens = market.get("tokens") or []
+        oi = row.get("outcome_index")
+        won = False
+        if oi is not None and oi < len(tokens):
+            won = bool(tokens[oi].get("winner"))
+        store.resolve_shadow_skip(row["id"], won, row.get("entry_price") or 0.0)
+        resolved += 1
+    return {"checked": checked, "resolved": resolved}

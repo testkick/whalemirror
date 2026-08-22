@@ -223,6 +223,12 @@ def set_whale_cats(address: str, body: WhaleCatsBody, request: Request):
             "prefs": store.followed_whale_prefs()}
 
 
+@app.get("/api/skipped-shadow")
+def skipped_shadow(request: Request):
+    require_session(request)
+    return store.shadow_skip_report()
+
+
 @app.get("/api/whales/weights")
 def whale_weights(request: Request):
     require_session(request)
@@ -390,6 +396,7 @@ def _sweep_is_stale() -> bool:
 async def scheduler():
     await asyncio.sleep(5)
     last_track = 0.0
+    last_shadow = 0.0
     last_housekeeping = 0.0
     while True:
         _sched_heartbeat["ts"] = time.time()
@@ -415,6 +422,13 @@ async def scheduler():
             last_housekeeping = time.time()
             try:
                 await asyncio.to_thread(store.housekeeping)
+            except Exception:  # noqa: BLE001
+                pass
+        # Resolve matured skipped-bet shadows every ~5 min (slow-changing).
+        if time.time() - last_shadow > 300:
+            last_shadow = time.time()
+            try:
+                await asyncio.to_thread(tracker.resolve_shadow_skips)
             except Exception:  # noqa: BLE001
                 pass
         # Position tracking runs on its OWN fast cadence, independent of the
@@ -481,10 +495,17 @@ async def startup():
 
 
 @app.get("/api/performance")
-def performance(request: Request):
+def performance(request: Request, range: str = "7d"):
     require_session(request)
     summary = store.performance_summary()
-    snaps = {"dry_run": store.snapshots("dry_run"), "live": store.snapshots("live")}
+    import time as _t
+    _spans = {"24h": 86400, "7d": 604800, "30d": 2592000, "all": None}
+    span = _spans.get(range, 604800)
+    since = (_t.time() - span) if span else None
+    # 24h wants fine detail; longer windows downsample harder to stay plottable.
+    max_pts = 1500 if range in ("24h", "7d") else 2000
+    snaps = {"dry_run": store.snapshots("dry_run", since=since, max_points=max_pts),
+             "live": store.snapshots("live", since=since, max_points=max_pts)}
     # Append a live "now" point so the chart's tail always equals the headline
     # totals (they're computed from the same summary, same instant). The stored
     # history stays the tracker's job; this only guarantees the endpoint agrees

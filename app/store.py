@@ -149,6 +149,23 @@ def init():
             status TEXT,           -- 'ok' | 'skipped' | 'error'
             detail TEXT
         );
+        CREATE TABLE IF NOT EXISTS skipped_shadow (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL NOT NULL,
+            signal_id TEXT NOT NULL,
+            title TEXT,
+            category TEXT,
+            outcome_index INTEGER,
+            condition_id TEXT,
+            entry_price REAL,      -- price when we skipped (hypothetical entry)
+            filter_reason TEXT,    -- WHICH filter blocked it (normalized)
+            raw_detail TEXT,       -- full skip message
+            resolved INTEGER DEFAULT 0,   -- 0 pending, 1 resolved
+            won INTEGER,           -- 1/0 once resolved: would the bet have won?
+            hypo_pnl REAL,         -- hypothetical P&L on a standard-size bet
+            resolved_ts REAL,
+            UNIQUE(signal_id, filter_reason)   -- one shadow row per signal+filter
+        );
         """)
         _migrate(conn)
 
@@ -335,6 +352,99 @@ def last_refresh() -> float | None:
 
 
 # ── Mirror log ────────────────────────────────────────────────────────────
+def _classify_skip(detail: str) -> str | None:
+    """Map a skip detail string to a normalized filter name we can group by.
+    Returns None for skips that aren't filter-driven (paused, dup, sane bounds)
+    — those aren't 'the filter cut a bet', so we don't shadow them."""
+    d = (detail or "").lower()
+    if "entry band" in d and "whale" not in d:
+        return "entry_band"
+    if "category filter" in d:
+        return "category_disabled"
+    if "whale filter" in d:
+        return "whale_category"
+    if "in-game" in d:
+        return "in_game"
+    if "time horizon" in d:
+        return "time_horizon"
+    # not a strategy filter (paused / dup / bounds / setup) -> don't shadow
+    return None
+
+
+def record_skip_shadow(signal: dict, price: float, detail: str):
+    """Capture a filter-driven skip so we can later resolve whether taking the
+    bet WOULD have won. Only records strategy-filter skips, not housekeeping."""
+    reason = _classify_skip(detail)
+    if reason is None:
+        return
+    cat = classify_category(signal.get("title"), signal.get("category"))
+    with db() as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO skipped_shadow
+              (ts, signal_id, title, category, outcome_index, condition_id,
+               entry_price, filter_reason, raw_detail)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (time.time(), signal["id"], signal.get("title"),
+              cat, signal.get("outcome_index"), signal.get("condition_id"),
+              price or signal.get("current_price"), reason, (detail or "")[:300]))
+
+
+def pending_shadow_skips(limit: int = 200) -> list[dict]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM skipped_shadow WHERE resolved=0 ORDER BY ts ASC LIMIT ?",
+            (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def resolve_shadow_skip(row_id: int, won: bool, entry_price: float, usd: float = 25.0):
+    """A skipped bet has matured. Compute hypothetical P&L: a YES bet at
+    entry_price winning pays (1-entry)/entry per $1; losing costs the stake."""
+    if won:
+        hypo = usd * (1.0 - entry_price) / entry_price if entry_price > 0 else 0.0
+    else:
+        hypo = -usd
+    with db() as conn:
+        conn.execute(
+            "UPDATE skipped_shadow SET resolved=1, won=?, hypo_pnl=?, resolved_ts=? WHERE id=?",
+            (1 if won else 0, round(hypo, 2), time.time(), row_id))
+
+
+def shadow_skip_report() -> dict:
+    """Per-filter verdict: of the bets each filter skipped, what would their
+    aggregate P&L have been? Positive = the filter is cutting WINNERS (too
+    aggressive). Negative = the filter is correctly cutting losers."""
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT filter_reason,
+                   COUNT(*) AS total,
+                   SUM(resolved) AS resolved,
+                   SUM(CASE WHEN resolved=1 AND won=1 THEN 1 ELSE 0 END) AS would_win,
+                   SUM(CASE WHEN resolved=1 AND won=0 THEN 1 ELSE 0 END) AS would_lose,
+                   COALESCE(SUM(hypo_pnl),0) AS hypo_pnl
+            FROM skipped_shadow GROUP BY filter_reason
+        """).fetchall()
+    out = []
+    for r in rows:
+        resolved = r["resolved"] or 0
+        wins = r["would_win"] or 0
+        out.append({
+            "filter": r["filter_reason"],
+            "skipped_total": r["total"],
+            "resolved": resolved,
+            "would_have_won": wins,
+            "would_have_lost": r["would_lose"] or 0,
+            "hypo_win_rate": round(wins / resolved * 100, 1) if resolved else None,
+            "hypo_pnl": round(r["hypo_pnl"], 2),
+            # the verdict: was skipping these a good call?
+            "verdict": ("correctly cutting losers" if (r["hypo_pnl"] or 0) < -1
+                        else "CUTTING WINNERS — consider loosening" if (r["hypo_pnl"] or 0) > 1
+                        else "roughly neutral"),
+        })
+    out.sort(key=lambda x: x["hypo_pnl"])   # worst-cut (most missed profit) last
+    return {"filters": out}
+
+
 def log_mirror(signal: dict, usd: float, price: float, mode: str, status: str,
                detail: str, side: str = "BUY"):
     with db() as conn:
@@ -573,25 +683,45 @@ def add_snapshot(mode: str, cost: float, value: float, realized: float):
                      (time.time(), mode, cost, value, realized))
 
 
-def snapshots(mode: str | None = None, limit: int = 5000,
-              since: float | None = None) -> list[dict]:
-    """Most RECENT snapshots for the chart. The previous version ordered ASC
-    with a LIMIT, which returned the OLDEST rows once the table grew past the
-    limit — so the chart froze at ~snapshot #2000 (around 7/29) even though
-    fresh rows kept being written. We now take the newest rows (DESC + LIMIT)
-    and return them ascending for plotting. `since` (epoch secs) lets callers
-    fetch only the window they'll display."""
+def snapshots(mode: str | None = None, since: float | None = None,
+              max_points: int = 1500) -> list[dict]:
+    """Snapshots for the chart within a time window, DOWNSAMPLED to at most
+    max_points so long windows (30d/All) stay plottable.
+
+    The prior version took the newest `limit` rows with no time bucketing, so a
+    fixed 5000-row cap only covered ~21h of 15-second snapshots — every window
+    (even 'All') showed the same last day. Now we bucket by time across the
+    requested window and take one row per bucket, so 24h shows fine detail and
+    'All' shows the whole history thinned to a readable line."""
     clauses, args = [], []
     if mode:
         clauses.append("mode=?"); args.append(mode)
     if since is not None:
         clauses.append("ts >= ?"); args.append(since)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
     with db() as conn:
         rows = conn.execute(
-            f"SELECT * FROM pnl_snapshots{where} ORDER BY ts DESC LIMIT ?",
-            (*args, limit)).fetchall()
-    return [dict(r) for r in reversed(rows)]   # ascending for the chart
+            f"SELECT * FROM pnl_snapshots{where} ORDER BY ts ASC", args).fetchall()
+    if not rows:
+        return []
+    if len(rows) <= max_points:
+        return [dict(r) for r in rows]
+    # Downsample by time bucket: divide the span into max_points buckets and keep
+    # the last row in each, so the shape (incl. the current tail) is preserved.
+    lo, hi = rows[0]["ts"], rows[-1]["ts"]
+    span = max(1e-6, hi - lo)
+    bucket = span / max_points
+    out, last_b, keep = [], -1, None
+    for r in rows:
+        b = int((r["ts"] - lo) / bucket)
+        if b != last_b and keep is not None:
+            out.append(dict(keep))
+        keep = r
+        last_b = b
+    if keep is not None:
+        out.append(dict(keep))   # always include the freshest point
+    return out
 
 
 def peak_capital_deployed(mode: str) -> float:

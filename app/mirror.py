@@ -89,6 +89,13 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
 
     def fail(status: str, detail: str, price: float = 0.0):
         store.log_mirror(signal, usd, price, mode, status, detail)
+        # Shadow strategy-filter skips so we can later measure whether taking
+        # them would have won — turns "am I over-filtering?" into data.
+        if status == "skipped":
+            try:
+                store.record_skip_shadow(signal, price, detail)
+            except Exception:  # noqa: BLE001 — shadow logging must never block mirroring
+                pass
         return {"status": status, "detail": detail, "mode": mode}
 
     # Guardrails ----------------------------------------------------------
