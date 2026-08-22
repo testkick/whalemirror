@@ -410,39 +410,74 @@ def resolve_shadow_skip(row_id: int, won: bool, entry_price: float, usd: float =
             (1 if won else 0, round(hypo, 2), time.time(), row_id))
 
 
+# Below this many resolved skips, a verdict is noise — say so rather than
+# telling the user to loosen on a coin-flip's worth of data.
+_SHADOW_MIN_RESOLVED = 20
+
+def _price_band(p) -> str:
+    if p is None: return "?"
+    c = round(float(p) * 100)
+    if c < 10:  return "<10¢"
+    if c < 25:  return "10-24¢"
+    if c < 50:  return "25-49¢"
+    if c < 65:  return "50-64¢"
+    if c < 95:  return "65-94¢"
+    return "95¢+"
+
+def _verdict(resolved, hypo_pnl):
+    if resolved < _SHADOW_MIN_RESOLVED:
+        return f"too few to judge ({resolved}/{_SHADOW_MIN_RESOLVED})"
+    if hypo_pnl < -1:  return "correctly cutting losers"
+    if hypo_pnl > 1:   return "CUTTING WINNERS — consider loosening"
+    return "roughly neutral"
+
+def _summarize_group(rows) -> dict:
+    resolved = sum(1 for r in rows if r["resolved"])
+    wins = sum(1 for r in rows if r["resolved"] and r["won"])
+    hypo = sum((r["hypo_pnl"] or 0) for r in rows if r["resolved"])
+    return {
+        "skipped_total": len(rows),
+        "resolved": resolved,
+        "would_have_won": wins,
+        "would_have_lost": resolved - wins,
+        "hypo_win_rate": round(wins / resolved * 100, 1) if resolved else None,
+        "hypo_pnl": round(hypo, 2),
+        "verdict": _verdict(resolved, hypo),
+    }
+
 def shadow_skip_report() -> dict:
-    """Per-filter verdict: of the bets each filter skipped, what would their
-    aggregate P&L have been? Positive = the filter is cutting WINNERS (too
-    aggressive). Negative = the filter is correctly cutting losers."""
+    """Per-filter verdict WITH breakdowns by category and entry-price band, so a
+    'cutting winners' flag can be traced to the specific category/price it's
+    happening in. Thin samples are labeled 'too few to judge' rather than acted on."""
     with db() as conn:
-        rows = conn.execute("""
-            SELECT filter_reason,
-                   COUNT(*) AS total,
-                   SUM(resolved) AS resolved,
-                   SUM(CASE WHEN resolved=1 AND won=1 THEN 1 ELSE 0 END) AS would_win,
-                   SUM(CASE WHEN resolved=1 AND won=0 THEN 1 ELSE 0 END) AS would_lose,
-                   COALESCE(SUM(hypo_pnl),0) AS hypo_pnl
-            FROM skipped_shadow GROUP BY filter_reason
-        """).fetchall()
-    out = []
+        rows = [dict(r) for r in conn.execute("SELECT * FROM skipped_shadow").fetchall()]
+
+    by_filter = {}
     for r in rows:
-        resolved = r["resolved"] or 0
-        wins = r["would_win"] or 0
-        out.append({
-            "filter": r["filter_reason"],
-            "skipped_total": r["total"],
-            "resolved": resolved,
-            "would_have_won": wins,
-            "would_have_lost": r["would_lose"] or 0,
-            "hypo_win_rate": round(wins / resolved * 100, 1) if resolved else None,
-            "hypo_pnl": round(r["hypo_pnl"], 2),
-            # the verdict: was skipping these a good call?
-            "verdict": ("correctly cutting losers" if (r["hypo_pnl"] or 0) < -1
-                        else "CUTTING WINNERS — consider loosening" if (r["hypo_pnl"] or 0) > 1
-                        else "roughly neutral"),
-        })
-    out.sort(key=lambda x: x["hypo_pnl"])   # worst-cut (most missed profit) last
-    return {"filters": out}
+        by_filter.setdefault(r["filter_reason"], []).append(r)
+
+    out = []
+    for filt, frows in by_filter.items():
+        entry = _summarize_group(frows)
+        entry["filter"] = filt
+        # category breakdown
+        cats = {}
+        for r in frows:
+            cats.setdefault(r.get("category") or "Uncategorized", []).append(r)
+        entry["by_category"] = sorted(
+            [{**_summarize_group(v), "category": k} for k, v in cats.items()],
+            key=lambda x: x["hypo_pnl"])
+        # entry-price band breakdown
+        bands = {}
+        for r in frows:
+            bands.setdefault(_price_band(r.get("entry_price")), []).append(r)
+        entry["by_band"] = sorted(
+            [{**_summarize_group(v), "band": k} for k, v in bands.items()],
+            key=lambda x: x["hypo_pnl"])
+        out.append(entry)
+
+    out.sort(key=lambda x: x["hypo_pnl"])
+    return {"filters": out, "min_resolved_for_verdict": _SHADOW_MIN_RESOLVED}
 
 
 def log_mirror(signal: dict, usd: float, price: float, mode: str, status: str,
