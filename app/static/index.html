@@ -193,6 +193,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="signals">Signals</button>
     <button class="tab" data-tab="performance">Performance</button>
+    <button class="tab" data-tab="tuning">Tuning</button>
     <button class="tab" data-tab="whales">Whales</button>
     <button class="tab" data-tab="activity">Activity</button>
     <button class="tab" data-tab="settings">Settings</button>
@@ -263,20 +264,7 @@
         <h2>P&L by position</h2>
         <canvas id="pos-chart" height="90"></canvas>
       </div>
-      <div class="card chart-card">
-        <h2>Band effectiveness (bets we took)</h2>
-        <p class="hint" style="margin-bottom:12px">Of the bets we <b>actually took</b>, how is each category and entry-price band doing? <b>Positive P&amp;L = the band is working, keep it.</b> Negative = consider tightening. The skipped-bet report below covers the bands we <i>cut</i> — together they show whether each boundary is drawn right.</p>
-        <div id="taken-matrix" class="mtx-host"></div>
-      </div>
-      <div class="card chart-card">
-        <h2>Filter effectiveness (skipped-bet shadow)</h2>
-        <p class="hint" style="margin-bottom:12px">Of the bets each filter skipped, what would they have done if taken? <b>Negative hypo P&amp;L = the filter is correctly cutting losers.</b> Positive = it may be cutting winners; consider loosening. Only resolved (matured) skips count.</p>
-        <table class="activity-table" id="shadow-table">
-          <thead><tr><th>Filter</th><th class="num">Skipped</th><th class="num">Resolved</th>
-            <th class="num">Would-win %</th><th class="num">Hypo P&L</th><th>Verdict</th></tr></thead>
-          <tbody id="shadow-body"></tbody>
-        </table>
-      </div>
+
       <div id="performance-empty" class="empty hidden">No tracked positions yet — mirror a signal (dry run counts) and the tracker will start marking it to market.</div>
       <div class="filter-bar">
         <button class="chip" data-pf="open">Open</button>
@@ -292,7 +280,27 @@
     </section>
 
     <!-- WHALES -->
-    <section id="tab-whales" class="tab-panel hidden">
+        <section id="tab-tuning" class="tab-panel hidden">
+      <div class="card">
+        <h2>Tuning — entry bands</h2>
+        <p class="hint" style="margin-bottom:6px">Each cell is a <b>switch</b>. Filled = you bet that category × price band; empty = filtered out. The number is realized P&amp;L from bets you took there (small superscript = settled count, <b>*</b> = under 20, low confidence). <b>Click cells to toggle</b>, then Save.</p>
+        <p class="hint" style="margin-bottom:14px"><span style="color:var(--sonar)">Green</span> = working, keep on. <span style="color:var(--amber)">Amber</span> = losing, consider turning off. Toggled-but-unsaved cells show a dashed outline.</p>
+        <div id="tuning-matrix" class="mtx-host"></div>
+        <div class="btn-row" style="margin-top:16px;align-items:center;gap:14px">
+          <button class="btn btn-primary" id="tuning-save" disabled>Save tuning</button>
+          <button class="btn btn-ghost" id="tuning-discard" disabled>Discard changes</button>
+          <span id="tuning-pending" class="hint"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Opportunities — bands you're cutting</h2>
+        <p class="hint" style="margin-bottom:14px">Of the bets each filter <b>skipped</b>, what would they have done if taken? <b>Green = would have won (a missed opportunity)</b> — click to turn that band ON. Amber/negative = correctly cut. Only resolved skips count; under 20 shows low confidence.</p>
+        <div id="tuning-opps" class="mtx-host"></div>
+      </div>
+    </section>
+
+<section id="tab-whales" class="tab-panel hidden">
       <div class="range-toggle" style="margin-bottom:14px">
         <button class="chip on" id="w-view-overall">Overall</button>
         <button class="chip" id="w-view-category">By category</button>

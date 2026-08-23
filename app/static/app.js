@@ -41,6 +41,7 @@ document.querySelectorAll(".tab").forEach((t) => {
     $("tab-" + t.dataset.tab).classList.remove("hidden");
     if (t.dataset.tab === "activity") loadActivity();
     if (t.dataset.tab === "performance") loadPerformance();
+    if (t.dataset.tab === "tuning") loadTuning();
     if (t.dataset.tab === "whales") loadWhales();
     if (t.dataset.tab === "settings") loadSettings();
   };
@@ -509,8 +510,6 @@ async function loadPerformance() {
   }
   const pnlEmpty = $("pnl-empty");
   if (pnlEmpty) pnlEmpty.classList.toggle("hidden", totalPts >= 2);
-  loadTakenBands();
-  loadShadowReport();
   if (chartsVisible) {
     // Update in place when the chart already exists (cheap, visibly extends the
     // line, no re-animation). Only build from scratch the first time.
@@ -1342,3 +1341,144 @@ async function boot() {
 (async () => {
   try { await api("/api/settings"); boot(); } catch (_) { showLogin(); }
 })();
+
+/* ── Tuning page ─────────────────────────────────────────────────────── */
+let _tuning = null;        // { band_cells, all_bands, taken, skipped }
+let _tuningStaged = null;  // working copy of band_cells (Set per category)
+let _tuningDirty = false;
+
+function _cellMapFromTaken(taken) {
+  const m = {};
+  (taken.cells || []).forEach((c) => { m[c.category + "|" + c.band] = c; });
+  return m;
+}
+
+async function loadTuning() {
+  try { _tuning = await api("/api/tuning"); } catch (_) { return; }
+  // staged = deep copy of current ON cells as Sets
+  _tuningStaged = {};
+  Object.entries(_tuning.band_cells || {}).forEach(([cat, cells]) => {
+    _tuningStaged[cat] = new Set(cells);
+  });
+  _tuningDirty = false;
+  renderTuningMatrix();
+  renderTuningOpps();
+  updateTuningButtons();
+}
+
+function renderTuningMatrix() {
+  const host = $("tuning-matrix");
+  if (!host || !_tuning) return;
+  const bands = _tuning.all_bands;
+  const taken = _cellMapFromTaken(_tuning.taken || {});
+  const minN = (_tuning.taken && _tuning.taken.min_settled_for_verdict) || 20;
+  const cats = Object.keys(_tuningStaged).sort();
+
+  let html = `<table class="mtx"><thead><tr><th>Category</th>` +
+    bands.map((b) => `<th class="num">${b}</th>`).join("") + `</tr></thead><tbody>`;
+  cats.forEach((cat) => {
+    html += `<tr><td class="mtx-cat">${esc(cat)}</td>`;
+    bands.forEach((band) => {
+      const on = _tuningStaged[cat].has(band);
+      const orig = (_tuning.band_cells[cat] || []).includes(band);
+      const changed = on !== orig;
+      const c = taken[cat + "|" + band];
+      let inner = "";
+      if (c) {
+        const confident = c.settled >= minN;
+        const color = c.pnl > 1 ? "var(--sonar)" : c.pnl < -1 ? "var(--amber)" : "var(--muted)";
+        inner = `<span style="color:${color};opacity:${confident ? 1 : 0.5}">${c.pnl > 0 ? "+" : ""}$${Math.round(c.pnl)}<span class="mtx-n">${c.settled}${confident ? "" : "*"}</span></span>`;
+      } else {
+        inner = `<span class="mtx-empty">—</span>`;
+      }
+      html += `<td class="mtx-toggle ${on ? "on" : "off"} ${changed ? "changed" : ""}"
+                 data-cat="${esc(cat)}" data-band="${esc(band)}"
+                 title="${on ? "ON — betting here" : "OFF — filtered"}${changed ? " (unsaved)" : ""}. Click to toggle.">
+                 ${inner}</td>`;
+    });
+    html += `</tr>`;
+  });
+  html += `</tbody></table>`;
+  host.innerHTML = html;
+
+  host.querySelectorAll(".mtx-toggle").forEach((td) => {
+    td.onclick = () => {
+      const cat = td.dataset.cat, band = td.dataset.band;
+      const set = _tuningStaged[cat];
+      if (set.has(band)) set.delete(band); else set.add(band);
+      _tuningDirty = true;
+      renderTuningMatrix();
+      updateTuningButtons();
+    };
+  });
+}
+
+function renderTuningOpps() {
+  const host = $("tuning-opps");
+  if (!host || !_tuning) return;
+  const sk = _tuning.skipped || {};
+  const eb = (sk.filters || []).find((f) => f.filter === "entry_band");
+  if (!eb || !(eb.by_category || []).length) {
+    host.innerHTML = `<p class="empty">No matured skipped-bet data yet. As markets you skipped resolve, missed opportunities appear here.</p>`;
+    return;
+  }
+  // Show category×band skipped cells that would have WON (positive hypo), clickable to turn ON.
+  // We approximate the cell grain from by_category + by_band where available.
+  const rows = [];
+  (eb.by_category || []).forEach((c) => {
+    rows.push({ label: c.category, kind: "category", ...c });
+  });
+  let html = `<table class="mtx"><thead><tr><th>Skipped in</th><th class="num">Skipped</th>
+    <th class="num">Resolved</th><th class="num">Would-win %</th><th class="num">Hypo P&L</th><th>Verdict</th><th></th></tr></thead><tbody>`;
+  rows.forEach((r) => {
+    const good = r.hypo_pnl > 1 && r.resolved >= (sk.min_resolved_for_verdict || 20);
+    const color = r.hypo_pnl > 1 ? "var(--sonar)" : r.hypo_pnl < -1 ? "var(--amber)" : "var(--muted)";
+    // clicking turns ON all bands for that category is too blunt; instead we
+    // surface it as guidance and let the matrix be the precise control.
+    html += `<tr>
+      <td>${esc(r.label)}</td>
+      <td class="num">${r.skipped_total}</td>
+      <td class="num">${r.resolved}</td>
+      <td class="num">${r.hypo_win_rate == null ? "—" : r.hypo_win_rate + "%"}</td>
+      <td class="num" style="color:${color}">${r.hypo_pnl > 0 ? "+" : ""}$${r.hypo_pnl}</td>
+      <td style="color:${color};font-size:0.9em">${esc(r.verdict)}</td>
+      <td>${good ? `<span class="opp-flag">opportunity ↑</span>` : ""}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>
+    <p class="hint" style="margin-top:10px">A <span class="opp-flag">opportunity ↑</span> flag means the bands you're cutting in that category would have won (with enough resolved bets to trust). Turn those bands ON in the matrix above — the exact price band to enable is shown there per cell.</p>`;
+  host.innerHTML = html;
+}
+
+function updateTuningButtons() {
+  const save = $("tuning-save"), disc = $("tuning-discard"), note = $("tuning-pending");
+  if (!save) return;
+  // count changes vs original
+  let added = [], removed = [];
+  Object.entries(_tuningStaged).forEach(([cat, set]) => {
+    const orig = new Set(_tuning.band_cells[cat] || []);
+    _tuning.all_bands.forEach((b) => {
+      if (set.has(b) && !orig.has(b)) added.push(`${cat} ${b}`);
+      if (!set.has(b) && orig.has(b)) removed.push(`${cat} ${b}`);
+    });
+  });
+  const n = added.length + removed.length;
+  save.disabled = n === 0;
+  disc.disabled = n === 0;
+  if (n === 0) { note.textContent = ""; return; }
+  const parts = [];
+  if (added.length) parts.push(`turning ON ${added.length}`);
+  if (removed.length) parts.push(`turning OFF ${removed.length}`);
+  note.textContent = `${n} pending change${n > 1 ? "s" : ""}: ${parts.join(", ")}.`;
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target && e.target.id === "tuning-save") {
+    const payload = {};
+    Object.entries(_tuningStaged).forEach(([cat, set]) => { payload[cat] = [...set]; });
+    api("/api/tuning", { method: "POST", body: JSON.stringify({ band_cells: payload }) })
+      .then(() => { flash("ok", "Tuning saved — new entry bands are live."); loadTuning(); })
+      .catch(() => flash("err", "Save failed."));
+  }
+  if (e.target && e.target.id === "tuning-discard") { loadTuning(); }
+});

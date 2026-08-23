@@ -412,3 +412,15 @@ footer {
 .mtx .mtx-tot { font-weight: 700; border-left: 1px solid var(--line); }
 .mtx .mtx-n { color: var(--muted); font-size: 9px; margin-left: 4px; vertical-align: super; }
 .mtx tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* Tuning matrix — interactive toggles */
+.mtx-toggle { cursor: pointer; text-align: right; border: 1px solid transparent; transition: background 0.1s; user-select: none; }
+.mtx-toggle.on { background: rgba(90,200,160,0.06); }
+.mtx-toggle.off { background: rgba(255,255,255,0.015); }
+.mtx-toggle.off .mtx-empty, .mtx-toggle.off span { opacity: 0.35; }
+.mtx-toggle:hover { background: rgba(255,255,255,0.06); }
+.mtx-toggle.changed { border: 1px dashed var(--sonar); }
+.mtx-toggle.on::before { content: "●"; color: var(--sonar); font-size: 8px; margin-right: 6px; vertical-align: middle; }
+.mtx-toggle.off::before { content: "○"; color: var(--muted); font-size: 8px; margin-right: 6px; vertical-align: middle; }
+.mtx-empty { color: var(--line); }
+.opp-flag { color: var(--sonar); font-size: 11px; font-weight: 600; white-space: nowrap; }
