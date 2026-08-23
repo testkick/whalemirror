@@ -1418,36 +1418,63 @@ function renderTuningOpps() {
   if (!host || !_tuning) return;
   const sk = _tuning.skipped || {};
   const eb = (sk.filters || []).find((f) => f.filter === "entry_band");
-  if (!eb || !(eb.by_category || []).length) {
-    host.innerHTML = `<p class="empty">No matured skipped-bet data yet. As markets you skipped resolve, missed opportunities appear here.</p>`;
+  const minN = sk.min_resolved_for_verdict || 20;
+  const cells = (eb && eb.cells) || [];
+  // Only cells that are a real opportunity: positive hypo P&L with enough
+  // resolved bets to trust. These name the EXACT category × band to enable.
+  const opps = cells.filter((c) => c.hypo_pnl > 1 && c.resolved >= minN);
+  // Also show promising-but-thin ones so you can watch them mature.
+  const watch = cells.filter((c) => c.hypo_pnl > 1 && c.resolved < minN && c.resolved >= 3);
+
+  if (!opps.length && !watch.length) {
+    host.innerHTML = `<p class="empty">No missed opportunities yet. As skipped bets mature, any band you're cutting that would have won shows here — with a one-click switch to turn it on.</p>`;
     return;
   }
-  // Show category×band skipped cells that would have WON (positive hypo), clickable to turn ON.
-  // We approximate the cell grain from by_category + by_band where available.
-  const rows = [];
-  (eb.by_category || []).forEach((c) => {
-    rows.push({ label: c.category, kind: "category", ...c });
-  });
-  let html = `<table class="mtx"><thead><tr><th>Skipped in</th><th class="num">Skipped</th>
-    <th class="num">Resolved</th><th class="num">Would-win %</th><th class="num">Hypo P&L</th><th>Verdict</th><th></th></tr></thead><tbody>`;
-  rows.forEach((r) => {
-    const good = r.hypo_pnl > 1 && r.resolved >= (sk.min_resolved_for_verdict || 20);
-    const color = r.hypo_pnl > 1 ? "var(--sonar)" : r.hypo_pnl < -1 ? "var(--amber)" : "var(--muted)";
-    // clicking turns ON all bands for that category is too blunt; instead we
-    // surface it as guidance and let the matrix be the precise control.
-    html += `<tr>
-      <td>${esc(r.label)}</td>
-      <td class="num">${r.skipped_total}</td>
-      <td class="num">${r.resolved}</td>
-      <td class="num">${r.hypo_win_rate == null ? "—" : r.hypo_win_rate + "%"}</td>
-      <td class="num" style="color:${color}">${r.hypo_pnl > 0 ? "+" : ""}$${r.hypo_pnl}</td>
-      <td style="color:${color};font-size:0.9em">${esc(r.verdict)}</td>
-      <td>${good ? `<span class="opp-flag">opportunity ↑</span>` : ""}</td>
+
+  const rowFor = (c, actionable) => {
+    const staged = _tuningStaged[c.category];
+    const alreadyOn = staged && staged.has(c.band);
+    const btn = actionable
+      ? (alreadyOn
+          ? `<span class="opp-on">✓ staged on</span>`
+          : `<button class="btn btn-mirror opp-btn" data-oc="${esc(c.category)}" data-ob="${esc(c.band)}">Turn on ${esc(c.band)} →</button>`)
+      : `<span class="hint">watching (${c.resolved}/${minN})</span>`;
+    return `<tr>
+      <td><b>${esc(c.category)}</b> · ${esc(c.band)}</td>
+      <td class="num">${c.resolved}</td>
+      <td class="num">${c.hypo_win_rate == null ? "—" : c.hypo_win_rate + "%"}</td>
+      <td class="num" style="color:var(--sonar)">+$${c.hypo_pnl}</td>
+      <td>${btn}</td>
     </tr>`;
-  });
+  };
+
+  let html = `<table class="mtx"><thead><tr><th>Category · band</th><th class="num">Resolved</th>
+    <th class="num">Would-win %</th><th class="num">Hypo P&L</th><th>Action</th></tr></thead><tbody>`;
+  if (opps.length) {
+    html += `<tr><td colspan="5" style="color:var(--sonar);font-size:0.8em">READY TO ACT (enough resolved bets)</td></tr>`;
+    html += opps.map((c) => rowFor(c, true)).join("");
+  }
+  if (watch.length) {
+    html += `<tr><td colspan="5" style="color:var(--muted);font-size:0.8em">STILL MATURING (promising, not yet confident)</td></tr>`;
+    html += watch.map((c) => rowFor(c, false)).join("");
+  }
   html += `</tbody></table>
-    <p class="hint" style="margin-top:10px">A <span class="opp-flag">opportunity ↑</span> flag means the bands you're cutting in that category would have won (with enough resolved bets to trust). Turn those bands ON in the matrix above — the exact price band to enable is shown there per cell.</p>`;
+    <p class="hint" style="margin-top:10px">Each row is a specific <b>category × price band</b> you're cutting that would have won. Click <b>Turn on</b> to stage it in the matrix above, then Save. "Still maturing" rows look promising but need ${minN}+ resolved bets before trusting.</p>`;
   host.innerHTML = html;
+
+  host.querySelectorAll(".opp-btn").forEach((b) => {
+    b.onclick = () => {
+      const cat = b.dataset.oc, band = b.dataset.ob;
+      if (!_tuningStaged[cat]) _tuningStaged[cat] = new Set();
+      _tuningStaged[cat].add(band);
+      _tuningDirty = true;
+      renderTuningMatrix();
+      renderTuningOpps();
+      updateTuningButtons();
+      // nudge the user toward the save button
+      flash("ok", `Staged ${cat} ${band} — review in the matrix and Save.`);
+    };
+  });
 }
 
 function updateTuningButtons() {
