@@ -480,6 +480,80 @@ def shadow_skip_report() -> dict:
     return {"filters": out, "min_resolved_for_verdict": _SHADOW_MIN_RESOLVED}
 
 
+def _summarize_taken(rows) -> dict:
+    """Summarize REAL taken positions (not hypothetical). Uses actual pnl and
+    win/loss, and settled count as the confidence basis."""
+    settled = [r for r in rows if r["status"] in ("won", "lost", "sold")]
+    wins = sum(1 for r in settled if (r["pnl"] or 0) > 0.01)
+    losses = sum(1 for r in settled if (r["pnl"] or 0) < -0.01)
+    invested = sum((r["usd"] or 0) for r in settled)
+    pnl = sum((r["pnl"] or 0) for r in settled)
+    n = len(settled)
+    if n < _SHADOW_MIN_RESOLVED:
+        verdict = f"too few to judge ({n}/{_SHADOW_MIN_RESOLVED})"
+    elif pnl > 1:
+        verdict = "working — keep"
+    elif pnl < -1:
+        verdict = "LOSING — consider tightening"
+    else:
+        verdict = "roughly break-even"
+    return {
+        "taken_total": len(rows),
+        "settled": n,
+        "open": len(rows) - n,
+        "wins": wins, "losses": losses,
+        "win_rate": round(wins / (wins + losses) * 100, 1) if (wins + losses) else None,
+        "invested": round(invested, 2),
+        "pnl": round(pnl, 2),
+        "roi": round(pnl / invested * 100, 1) if invested else None,
+        "verdict": verdict,
+    }
+
+
+def taken_band_report(mode: str = "dry_run") -> dict:
+    """The mirror image of the skipped-bet shadow: of the bets we ACTUALLY took,
+    how is each category × entry-price band performing? Answers 'are the bands
+    I'm keeping actually working?' Cells with no taken bets are simply absent
+    (those are the bands we filter out — the shadow report covers those)."""
+    with db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT category, entry_price, usd, pnl, status FROM positions WHERE mode=?",
+            (mode,)).fetchall()]
+    if not rows:
+        return {"categories": [], "bands": [], "cells": []}
+
+    # by category
+    by_cat = {}
+    for r in rows:
+        by_cat.setdefault(r.get("category") or "Uncategorized", []).append(r)
+    cats = sorted(
+        [{**_summarize_taken(v), "category": k} for k, v in by_cat.items()],
+        key=lambda x: (x["pnl"]))
+
+    # by entry-price band
+    by_band = {}
+    for r in rows:
+        by_band.setdefault(_price_band(r.get("entry_price")), []).append(r)
+    bands = sorted(
+        [{**_summarize_taken(v), "band": k} for k, v in by_band.items()],
+        key=lambda x: x["pnl"])
+
+    # category × band grid cells (only non-empty ones)
+    grid = {}
+    for r in rows:
+        key = ((r.get("category") or "Uncategorized"), _price_band(r.get("entry_price")))
+        grid.setdefault(key, []).append(r)
+    cells = []
+    for (cat, band), v in grid.items():
+        s = _summarize_taken(v)
+        s["category"], s["band"] = cat, band
+        cells.append(s)
+    cells.sort(key=lambda x: x["pnl"])
+
+    return {"categories": cats, "bands": bands, "cells": cells,
+            "min_settled_for_verdict": _SHADOW_MIN_RESOLVED}
+
+
 def log_mirror(signal: dict, usd: float, price: float, mode: str, status: str,
                detail: str, side: str = "BUY"):
     with db() as conn:

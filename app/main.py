@@ -229,6 +229,12 @@ def skipped_shadow(request: Request):
     return store.shadow_skip_report()
 
 
+@app.get("/api/taken-bands")
+def taken_bands(request: Request):
+    require_session(request)
+    return store.taken_band_report()
+
+
 @app.get("/api/whales/weights")
 def whale_weights(request: Request):
     require_session(request)
