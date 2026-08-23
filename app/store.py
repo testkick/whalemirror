@@ -529,6 +529,17 @@ def shadow_skip_report() -> dict:
         entry["by_band"] = sorted(
             [{**_summarize_group(v), "band": k} for k, v in bands.items()],
             key=lambda x: x["hypo_pnl"])
+        # category × band cells — the precise "which band in which category"
+        grid = {}
+        for r in frows:
+            key = ((r.get("category") or "Uncategorized"), _price_band(r.get("entry_price")))
+            grid.setdefault(key, []).append(r)
+        cells = []
+        for (cat, band), v in grid.items():
+            s = _summarize_group(v)
+            s["category"], s["band"] = cat, band
+            cells.append(s)
+        entry["cells"] = sorted(cells, key=lambda x: x["hypo_pnl"], reverse=True)
         out.append(entry)
 
     out.sort(key=lambda x: x["hypo_pnl"])
