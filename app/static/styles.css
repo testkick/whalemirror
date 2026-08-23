@@ -401,3 +401,14 @@ footer {
 .chart-card { margin-bottom: 14px; padding-bottom: 20px; }
 .chart-card canvas { height: 320px !important; max-height: 320px; width: 100% !important; }
 #pos-chart { height: 260px !important; max-height: 260px; }
+
+/* Category x band effectiveness matrix */
+.mtx { width: 100%; border-collapse: collapse; font-family: "IBM Plex Mono", monospace; font-size: 13px; }
+.mtx th { color: var(--muted); font-weight: 600; text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 11px; }
+.mtx th:first-child { text-align: left; }
+.mtx td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.mtx .mtx-cat { text-align: left; color: var(--ink); }
+.mtx .mtx-gap { color: var(--line); text-align: center; }
+.mtx .mtx-tot { font-weight: 700; border-left: 1px solid var(--line); }
+.mtx .mtx-n { color: var(--muted); font-size: 9px; margin-left: 4px; vertical-align: super; }
+.mtx tr:hover td { background: rgba(255,255,255,0.02); }

@@ -293,7 +293,6 @@ const pnlCls = (n) => (n >= 0 ? "pnl-pos" : "pnl-neg");
 function tabVisible(name) { return !$("tab-" + name).classList.contains("hidden"); }
 
 function takenPnlColor(pnl) {
-  // for TAKEN bets, positive P&L is GOOD -> sonar; negative is bad -> amber
   return pnl > 1 ? "var(--sonar)" : pnl < -1 ? "var(--amber)" : "var(--muted)";
 }
 function takenVerdictColor(v) {
@@ -302,85 +301,56 @@ function takenVerdictColor(v) {
   if (v.startsWith("working")) return "var(--sonar)";
   return "var(--muted)";
 }
-function takenRows(items, labelKey, indent) {
-  return items.map((it) => `
-    <tr${indent ? ' class="shadow-sub"' : ""}>
-      <td style="${indent ? "padding-left:28px;color:var(--muted)" : ""}">${esc(it[labelKey])}</td>
-      <td class="num">${it.taken_total}</td>
-      <td class="num">${it.settled}</td>
-      <td class="num">${it.win_rate == null ? "—" : it.win_rate + "%"}</td>
-      <td class="num">${it.roi == null ? "—" : it.roi + "%"}</td>
-      <td class="num" style="color:${takenPnlColor(it.pnl)}">${it.pnl > 0 ? "+" : ""}$${it.pnl}</td>
-      <td style="color:${takenVerdictColor(it.verdict)};font-size:${indent ? "0.85em" : "1em"}">${esc(it.verdict)}</td>
-    </tr>`).join("");
-}
 
-function takenCellRow(it, indent) {
-  return `<tr${indent ? ' class="shadow-sub"' : ""}>
-      <td style="${indent ? "padding-left:40px;color:var(--muted)" : ""}">${indent ? it.band : it.category}</td>
-      <td class="num">${it.taken_total}</td>
-      <td class="num">${it.settled}</td>
-      <td class="num">${it.win_rate == null ? "—" : it.win_rate + "%"}</td>
-      <td class="num">${it.roi == null ? "—" : it.roi + "%"}</td>
-      <td class="num" style="color:${takenPnlColor(it.pnl)}">${it.pnl > 0 ? "+" : ""}$${it.pnl}</td>
-      <td style="color:${takenVerdictColor(it.verdict)};font-size:${indent ? "0.85em" : "1em"}">${esc(it.verdict)}</td>
-    </tr>`;
-}
+const BAND_COLS = ["<10¢","10-24¢","25-49¢","50-64¢","65-94¢","95¢+"];
 
 async function loadTakenBands() {
   let rep;
   try { rep = await api("/api/taken-bands"); } catch (_) { return; }
-  const body = $("taken-body");
-  if (!body) return;
+  const host = $("taken-matrix");
+  if (!host) return;
   const cats = rep.categories || [];
-  const bands = rep.bands || [];
   const cells = rep.cells || [];
-  if (!cats.length && !bands.length) {
-    body.innerHTML = `<tr><td colspan="7" class="empty">No taken bets yet — mirror some signals and this fills in.</td></tr>`;
+  const minN = rep.min_settled_for_verdict || 20;
+  if (!cats.length) {
+    host.innerHTML = `<p class="empty">No taken bets yet — mirror some signals and this fills in.</p>`;
     return;
   }
-  // group cells by category so each category expands into its per-band rows
-  const cellsByCat = {};
-  cells.forEach((c) => { (cellsByCat[c.category] = cellsByCat[c.category] || []).push(c); });
-  // sort each category's bands in natural price order
-  const bandOrder = ["<10¢","10-24¢","25-49¢","50-64¢","65-94¢","95¢+","?"];
-  Object.values(cellsByCat).forEach((arr) =>
-    arr.sort((a,b) => bandOrder.indexOf(a.band) - bandOrder.indexOf(b.band)));
+  // index cells by category|band
+  const cellMap = {};
+  cells.forEach((c) => { cellMap[c.category + "|" + c.band] = c; });
+  // sort categories by total P&L (worst first, so problems are up top)
+  const catRows = [...cats].sort((a, b) => a.pnl - b.pnl);
 
-  let html = `<tr><td colspan="7" style="color:var(--sonar);font-size:0.8em">BY CATEGORY (click to see bands within)</td></tr>`;
-  cats.forEach((c, i) => {
-    const sub = cellsByCat[c.category] || [];
-    const hasDetail = sub.length > 1;
-    html += `<tr class="taken-parent" data-ti="${i}" style="cursor:${hasDetail ? "pointer" : "default"}">
-      <td>${hasDetail ? "▸ " : ""}${esc(c.category)}</td>
-      <td class="num">${c.taken_total}</td>
-      <td class="num">${c.settled}</td>
-      <td class="num">${c.win_rate == null ? "—" : c.win_rate + "%"}</td>
-      <td class="num">${c.roi == null ? "—" : c.roi + "%"}</td>
-      <td class="num" style="color:${takenPnlColor(c.pnl)}">${c.pnl > 0 ? "+" : ""}$${c.pnl}</td>
-      <td style="color:${takenVerdictColor(c.verdict)}">${esc(c.verdict)}</td></tr>`;
-    if (hasDetail) {
-      html += `<tr class="taken-detail hidden" data-td="${i}"><td colspan="7" style="padding:0">
-        <table class="activity-table" style="margin:2px 0 8px 0">
-          ${sub.map((s) => takenCellRow(s, true)).join("")}
-        </table></td></tr>`;
-    }
-  });
-  html += `<tr><td colspan="7" style="color:var(--sonar);font-size:0.8em">BY ENTRY PRICE (all categories)</td></tr>`;
-  html += bands.map((b) => takenCellRow(b, false)).join("");
-  body.innerHTML = html;
+  // legend + matrix. Each cell: colored P&L if bet there (settled>=minN bold,
+  // else faded), a dash if never bet there (a GAP — a band you filter out).
+  const cellHtml = (cat, band) => {
+    const c = cellMap[cat + "|" + band];
+    if (!c) return `<td class="mtx-gap" title="No bets — filtered out or none offered">·</td>`;
+    const confident = c.settled >= minN;
+    const color = takenPnlColor(c.pnl);
+    const sign = c.pnl > 0 ? "+" : "";
+    return `<td class="mtx-cell" title="${esc(cat)} ${band}: ${c.settled} settled, ROI ${c.roi==null?"—":c.roi+"%"}, ${c.verdict}"
+      style="color:${color};opacity:${confident ? 1 : 0.45}">
+      ${sign}$${Math.round(c.pnl)}<span class="mtx-n">${c.settled}${confident ? "" : "*"}</span></td>`;
+  };
 
-  body.querySelectorAll(".taken-parent").forEach((row) => {
-    row.onclick = () => {
-      const i = row.dataset.ti;
-      const d = body.querySelector(`.taken-detail[data-td="${i}"]`);
-      if (d) {
-        d.classList.toggle("hidden");
-        const cell = row.querySelector("td");
-        cell.textContent = cell.textContent.replace(/^[▸▾]\s/, d.classList.contains("hidden") ? "▸ " : "▾ ");
-      }
-    };
+  let html = `<table class="mtx"><thead><tr><th>Category</th>` +
+    BAND_COLS.map((b) => `<th class="num">${b}</th>`).join("") +
+    `<th class="num">Total</th></tr></thead><tbody>`;
+  catRows.forEach((cat) => {
+    const tot = cat.pnl;
+    html += `<tr><td class="mtx-cat">${esc(cat.category)}</td>` +
+      BAND_COLS.map((b) => cellHtml(cat.category, b)).join("") +
+      `<td class="num mtx-tot" style="color:${takenPnlColor(tot)}">${tot>0?"+":""}$${Math.round(tot)}</td></tr>`;
   });
+  html += `</tbody></table>
+    <p class="hint" style="margin-top:10px">
+      Each cell = <b>P&L of bets you took</b> in that category × price band (small number = settled count; <b>*</b> = under ${minN}, low confidence, faded).
+      <span style="color:var(--sonar)">Green</span> = working, keep. <span style="color:var(--amber)">Amber</span> = losing, consider tightening.
+      <b>·</b> = a gap: no bets there (a band you filter out, or the whales never offered one).
+      Green cells inside a losing row = the part of that category worth keeping; gaps next to green neighbors = a band you might be over-cutting (check the skipped-bet shadow below).</p>`;
+  host.innerHTML = html;
 }
 
 const SHADOW_NAMES = {
