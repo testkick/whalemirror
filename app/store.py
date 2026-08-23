@@ -244,6 +244,61 @@ def _clean_bands(bands) -> dict:
     return out
 
 
+# Canonical discrete price-band cells (match _price_band()). The tuning matrix
+# toggles these on/off per category; we convert to/from ranges for the gate.
+BAND_CELLS = ["<10¢", "10-24¢", "25-49¢", "50-64¢", "65-94¢", "95¢+"]
+_BAND_RANGES = {
+    "<10¢":  (0.00, 0.099),
+    "10-24¢": (0.10, 0.249),
+    "25-49¢": (0.25, 0.499),
+    "50-64¢": (0.50, 0.649),
+    "65-94¢": (0.65, 0.949),
+    "95¢+":   (0.95, 1.00),
+}
+
+def cells_to_ranges(cells: list[str]) -> list[list[float]]:
+    """Turn a set of ON band-cells into merged [lo,hi] ranges for the gate.
+    Adjacent cells merge into one contiguous range; gaps stay separate (so
+    25-49 + 65-94 with 50-64 OFF yields two ranges, a true barbell)."""
+    on = [c for c in BAND_CELLS if c in set(cells or [])]
+    if not on:
+        return []
+    ranges = []
+    for c in on:
+        lo, hi = _BAND_RANGES[c]
+        if ranges and abs(lo - ranges[-1][1]) < 0.02:   # contiguous -> extend
+            ranges[-1][1] = hi
+        else:
+            ranges.append([lo, hi])
+    return [[round(a, 3), round(b, 3)] for a, b in ranges]
+
+def ranges_to_cells(ranges) -> list[str]:
+    """Inverse: which band-cells does a set of ranges cover? A cell is ON if its
+    midpoint falls inside any range. Used to migrate existing range settings and
+    to render the matrix toggles from stored bands."""
+    if not ranges:
+        return []
+    on = []
+    for c in BAND_CELLS:
+        lo, hi = _BAND_RANGES[c]
+        mid = (lo + hi) / 2
+        if any(r[0] <= mid <= r[1] for r in ranges):
+            on.append(c)
+    return on
+
+def category_band_cells(settings: dict) -> dict:
+    """The ON cells per category, derived from stored ranges. Categories with no
+    custom bands return the global band expressed as cells, so the matrix always
+    shows a complete picture."""
+    bands = settings.get("category_entry_bands") or {}
+    glob = [[settings.get("min_entry_price", 0.0), settings.get("max_entry_price", 1.0)]]
+    out = {}
+    for cat in sorted(known_category_labels()):
+        r = bands.get(cat)
+        out[cat] = ranges_to_cells(r) if r else ranges_to_cells(glob)
+    return out
+
+
 def entry_band_allows(category: str, price: float, settings: dict) -> tuple[bool, str]:
     """Does `price` pass the entry band for this category?
     Per-category bands take precedence when enabled and defined for the category;

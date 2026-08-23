@@ -235,6 +235,37 @@ def taken_bands(request: Request):
     return store.taken_band_report()
 
 
+@app.get("/api/tuning")
+def get_tuning(request: Request):
+    require_session(request)
+    s = store.get_settings()
+    return {
+        "band_cells": store.category_band_cells(s),      # ON cells per category
+        "all_bands": store.BAND_CELLS,                     # column order
+        "use_category_bands": bool(s.get("use_category_bands")),
+        "taken": store.taken_band_report(),               # matrix data (P&L per cell)
+        "skipped": store.shadow_skip_report(),            # opportunities
+    }
+
+
+class TuningBody(BaseModel):
+    band_cells: dict          # {category: [cells...]}
+
+
+@app.post("/api/tuning")
+def save_tuning(body: TuningBody, request: Request):
+    require_session(request)
+    # Convert toggled cells -> ranges for each category, store as category_entry_bands.
+    ranges = {}
+    for cat, cells in (body.band_cells or {}).items():
+        r = store.cells_to_ranges(cells)
+        if r:
+            ranges[cat] = r
+    store.save_settings({"category_entry_bands": ranges, "use_category_bands": True})
+    s = store.get_settings()
+    return {"ok": True, "band_cells": store.category_band_cells(s)}
+
+
 @app.get("/api/whales/weights")
 def whale_weights(request: Request):
     require_session(request)
