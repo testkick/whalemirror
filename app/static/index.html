@@ -264,6 +264,15 @@
         <canvas id="pos-chart" height="90"></canvas>
       </div>
       <div class="card chart-card">
+        <h2>Band effectiveness (bets we took)</h2>
+        <p class="hint" style="margin-bottom:12px">Of the bets we <b>actually took</b>, how is each category and entry-price band doing? <b>Positive P&amp;L = the band is working, keep it.</b> Negative = consider tightening. The skipped-bet report below covers the bands we <i>cut</i> — together they show whether each boundary is drawn right.</p>
+        <table class="activity-table" id="taken-table">
+          <thead><tr><th>Group</th><th class="num">Taken</th><th class="num">Settled</th>
+            <th class="num">Win %</th><th class="num">ROI</th><th class="num">P&L</th><th>Verdict</th></tr></thead>
+          <tbody id="taken-body"></tbody>
+        </table>
+      </div>
+      <div class="card chart-card">
         <h2>Filter effectiveness (skipped-bet shadow)</h2>
         <p class="hint" style="margin-bottom:12px">Of the bets each filter skipped, what would they have done if taken? <b>Negative hypo P&amp;L = the filter is correctly cutting losers.</b> Positive = it may be cutting winners; consider loosening. Only resolved (matured) skips count.</p>
         <table class="activity-table" id="shadow-table">

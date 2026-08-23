@@ -292,6 +292,52 @@ const pnlCls = (n) => (n >= 0 ? "pnl-pos" : "pnl-neg");
 
 function tabVisible(name) { return !$("tab-" + name).classList.contains("hidden"); }
 
+function takenPnlColor(pnl) {
+  // for TAKEN bets, positive P&L is GOOD -> sonar; negative is bad -> amber
+  return pnl > 1 ? "var(--sonar)" : pnl < -1 ? "var(--amber)" : "var(--muted)";
+}
+function takenVerdictColor(v) {
+  if (v.startsWith("LOSING")) return "var(--amber)";
+  if (v.startsWith("too few")) return "var(--muted)";
+  if (v.startsWith("working")) return "var(--sonar)";
+  return "var(--muted)";
+}
+function takenRows(items, labelKey, indent) {
+  return items.map((it) => `
+    <tr${indent ? ' class="shadow-sub"' : ""}>
+      <td style="${indent ? "padding-left:28px;color:var(--muted)" : ""}">${esc(it[labelKey])}</td>
+      <td class="num">${it.taken_total}</td>
+      <td class="num">${it.settled}</td>
+      <td class="num">${it.win_rate == null ? "—" : it.win_rate + "%"}</td>
+      <td class="num">${it.roi == null ? "—" : it.roi + "%"}</td>
+      <td class="num" style="color:${takenPnlColor(it.pnl)}">${it.pnl > 0 ? "+" : ""}$${it.pnl}</td>
+      <td style="color:${takenVerdictColor(it.verdict)};font-size:${indent ? "0.85em" : "1em"}">${esc(it.verdict)}</td>
+    </tr>`).join("");
+}
+
+async function loadTakenBands() {
+  let rep;
+  try { rep = await api("/api/taken-bands"); } catch (_) { return; }
+  const body = $("taken-body");
+  if (!body) return;
+  const cats = rep.categories || [];
+  const bands = rep.bands || [];
+  if (!cats.length && !bands.length) {
+    body.innerHTML = `<tr><td colspan="7" class="empty">No taken bets yet — mirror some signals and this fills in.</td></tr>`;
+    return;
+  }
+  let html = "";
+  if (cats.length) {
+    html += `<tr><td colspan="7" style="color:var(--sonar);font-size:0.8em">BY CATEGORY</td></tr>`;
+    html += takenRows(cats, "category", false);
+  }
+  if (bands.length) {
+    html += `<tr><td colspan="7" style="color:var(--sonar);font-size:0.8em">BY ENTRY PRICE</td></tr>`;
+    html += takenRows(bands, "band", false);
+  }
+  body.innerHTML = html;
+}
+
 const SHADOW_NAMES = {
   entry_band: "Entry band", category_disabled: "Category off",
   whale_category: "Whale category", in_game: "In-game", time_horizon: "Time horizon",
@@ -448,6 +494,7 @@ async function loadPerformance() {
   }
   const pnlEmpty = $("pnl-empty");
   if (pnlEmpty) pnlEmpty.classList.toggle("hidden", totalPts >= 2);
+  loadTakenBands();
   loadShadowReport();
   if (chartsVisible) {
     // Update in place when the chart already exists (cheap, visibly extends the
