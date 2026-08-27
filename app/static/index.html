@@ -294,6 +294,19 @@
       </div>
 
       <div class="card">
+        <h2>Bet sizing by price band</h2>
+        <p class="hint" style="margin-bottom:6px">A win at a favorite price pays little, but a loss costs the full stake — so flat $25 bets lose money even at a high win rate. Stake <b>smaller on favorites</b> (65¢+) and full on value bands to fix the asymmetry.</p>
+        <label class="switch-row" style="margin:10px 0 16px 0">
+          <input type="checkbox" id="sizing-toggle"> <span>Use price-tiered bet sizing (off = flat $<span id="sizing-flat">25</span> everywhere)</span>
+        </label>
+        <div id="sizing-inputs" class="sizing-grid"></div>
+        <div class="btn-row" style="margin-top:16px;align-items:center;gap:14px">
+          <button class="btn btn-primary" id="sizing-save" disabled>Save sizing</button>
+          <span id="sizing-note" class="hint"></span>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>Opportunities — bands you're cutting</h2>
         <p class="hint" style="margin-bottom:14px">Of the bets each filter <b>skipped</b>, what would they have done if taken? <b>Green = would have won (a missed opportunity)</b> — click to turn that band ON. Amber/negative = correctly cut. Only resolved skips count; under 20 shows low confidence.</p>
         <div id="tuning-opps" class="mtx-host"></div>

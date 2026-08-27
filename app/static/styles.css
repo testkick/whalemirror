@@ -428,3 +428,12 @@ footer {
 /* Tuning opportunities — actionable cells */
 .opp-btn { font-size: 12px; padding: 4px 10px; white-space: nowrap; }
 .opp-on { color: var(--sonar); font-size: 12px; font-weight: 600; }
+
+/* Bet sizing by band */
+.sizing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+.sizing-cell { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.sizing-cell label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; letter-spacing: 0.5px; }
+.sizing-cell .dollar { display: flex; align-items: center; gap: 4px; }
+.sizing-cell input { width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--ink); border-radius: 6px; padding: 6px 8px; font-family: "IBM Plex Mono", monospace; font-size: 14px; }
+.sizing-cell.disabled { opacity: 0.4; }
+.switch-row { display: flex; align-items: center; gap: 10px; cursor: pointer; }

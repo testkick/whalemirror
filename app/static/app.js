@@ -1362,6 +1362,7 @@ async function loadTuning() {
   });
   _tuningDirty = false;
   renderTuningMatrix();
+  renderSizing();
   renderTuningOpps();
   updateTuningButtons();
 }
@@ -1508,4 +1509,49 @@ document.addEventListener("click", (e) => {
       .catch(() => flash("err", "Save failed."));
   }
   if (e.target && e.target.id === "tuning-discard") { loadTuning(); }
+});
+
+/* ── Tuning: bet sizing by band ──────────────────────────────────────── */
+function renderSizing() {
+  if (!_tuning) return;
+  const flat = _tuning.per_trade_usd || 25;
+  const flatEl = $("sizing-flat"); if (flatEl) flatEl.textContent = Math.round(flat);
+  const toggle = $("sizing-toggle");
+  if (toggle) toggle.checked = !!_tuning.use_band_sizing;
+  const host = $("sizing-inputs");
+  if (!host) return;
+  const stakes = _tuning.band_stakes || {};
+  const on = !!_tuning.use_band_sizing;
+  host.innerHTML = _tuning.all_bands.map((b) => {
+    const v = stakes[b] != null ? stakes[b] : flat;
+    return `<div class="sizing-cell ${on ? "" : "disabled"}">
+      <label>${b}</label>
+      <div class="dollar">$ <input type="number" min="0" step="1" data-band="${esc(b)}" value="${v}" ${on ? "" : "disabled"}></div>
+    </div>`;
+  }).join("");
+  const markDirty = () => { const s=$("sizing-save"); if (s) s.disabled=false; const n=$("sizing-note"); if(n) n.textContent="Unsaved changes."; };
+  host.querySelectorAll("input").forEach((i) => i.oninput = markDirty);
+  if (toggle) toggle.onchange = () => {
+    // enable/disable inputs live, and mark dirty
+    host.querySelectorAll(".sizing-cell").forEach((c) => c.classList.toggle("disabled", !toggle.checked));
+    host.querySelectorAll("input").forEach((i) => { i.disabled = !toggle.checked; });
+    markDirty();
+  };
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target && e.target.id === "sizing-save") {
+    const toggle = $("sizing-toggle");
+    const stakes = {};
+    $("sizing-inputs").querySelectorAll("input").forEach((i) => {
+      const val = parseFloat(i.value);
+      if (!isNaN(val)) stakes[i.dataset.band] = val;
+    });
+    api("/api/tuning", { method: "POST", body: JSON.stringify({
+      band_stakes: stakes, use_band_sizing: toggle.checked,
+    }) }).then(() => {
+      flash("ok", toggle.checked ? "Bet sizing saved — new stakes are live." : "Flat sizing restored.");
+      loadTuning();
+    }).catch(() => flash("err", "Save failed."));
+  }
 });
