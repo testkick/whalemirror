@@ -115,6 +115,15 @@ def execute_mirror(signal: dict, usd: float | None = None, manual: bool = False)
     if not ok:
         return fail("skipped", why, price_now)
 
+    # Price-tiered bet sizing. A win at a favorite price pays little but a loss
+    # costs the full stake, so flat staking loses money even at a high win rate.
+    # When band-sizing is on, stake smaller on favorites / coinflips. Only auto-
+    # sizes when the caller didn't pass an explicit manual amount.
+    if not manual:
+        usd = store.stake_for_price(price_now, settings)
+        if usd <= 0:
+            return fail("skipped", f"band stake is $0 for {store._price_band(price_now)} — not betting", price_now)
+
     # In-game filter — the single biggest edge in the backtest (pregame +6% vs
     # in-play -3.6%). Live state comes from the sports WS consumer (livestate).
     # FAIL-OPEN by default: an unknown state (feed down / market unmapped) still

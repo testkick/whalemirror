@@ -243,27 +243,48 @@ def get_tuning(request: Request):
         "band_cells": store.category_band_cells(s),      # ON cells per category
         "all_bands": store.BAND_CELLS,                     # column order
         "use_category_bands": bool(s.get("use_category_bands")),
+        "use_band_sizing": bool(s.get("use_band_sizing")),
+        "band_stakes": s.get("band_stakes") or {},
+        "per_trade_usd": s.get("per_trade_usd"),
         "taken": store.taken_band_report(),               # matrix data (P&L per cell)
         "skipped": store.shadow_skip_report(),            # opportunities
     }
 
 
 class TuningBody(BaseModel):
-    band_cells: dict          # {category: [cells...]}
+    band_cells: dict | None = None        # {category: [cells...]}
+    band_stakes: dict | None = None       # {band: usd}
+    use_band_sizing: bool | None = None
 
 
 @app.post("/api/tuning")
 def save_tuning(body: TuningBody, request: Request):
     require_session(request)
-    # Convert toggled cells -> ranges for each category, store as category_entry_bands.
-    ranges = {}
-    for cat, cells in (body.band_cells or {}).items():
-        r = store.cells_to_ranges(cells)
-        if r:
-            ranges[cat] = r
-    store.save_settings({"category_entry_bands": ranges, "use_category_bands": True})
+    patch = {}
+    if body.band_cells is not None:
+        ranges = {}
+        for cat, cells in body.band_cells.items():
+            r = store.cells_to_ranges(cells)
+            if r:
+                ranges[cat] = r
+        patch["category_entry_bands"] = ranges
+        patch["use_category_bands"] = True
+    if body.band_stakes is not None:
+        # sanitize: floats only, known bands only
+        clean = {}
+        for b in store.BAND_CELLS:
+            if b in body.band_stakes:
+                try:
+                    clean[b] = max(0.0, float(body.band_stakes[b]))
+                except (TypeError, ValueError):
+                    pass
+        patch["band_stakes"] = clean
+    if body.use_band_sizing is not None:
+        patch["use_band_sizing"] = bool(body.use_band_sizing)
+    store.save_settings(patch)
     s = store.get_settings()
-    return {"ok": True, "band_cells": store.category_band_cells(s)}
+    return {"ok": True, "band_cells": store.category_band_cells(s),
+            "band_stakes": s.get("band_stakes"), "use_band_sizing": bool(s.get("use_band_sizing"))}
 
 
 @app.get("/api/whales/weights")

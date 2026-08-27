@@ -176,6 +176,18 @@ SETTINGS_DEFAULTS = {
     "auto_mirror_followed": False,
     "dry_run": True,
     "per_trade_usd": 25.0,
+    "use_band_sizing": False,      # when on, stake varies by entry-price band
+    "band_stakes": {               # $ stake per price band; addresses the payoff
+                                   # asymmetry — favorites risk the full stake to
+                                   # win little, so stake them smaller. Empty/
+                                   # missing band falls back to per_trade_usd.
+        "<10¢":   10.0,            # longshots: small (usually filtered anyway)
+        "10-24¢": 25.0,           # value: full
+        "25-49¢": 25.0,           # profit core: full
+        "50-64¢": 15.0,           # coinflip: reduced
+        "65-94¢": 15.0,           # favorites: reduced — win pays little, loss full
+        "95¢+":   8.0,            # heavy favorites: minimal
+    },
     "daily_cap_usd": 100.0,
     "max_slippage": 0.03,          # skip if price moved > 3¢ past the signal
     "exit_with_whales": True,      # sell when the signal's consensus unwinds
@@ -297,6 +309,25 @@ def category_band_cells(settings: dict) -> dict:
         r = bands.get(cat)
         out[cat] = ranges_to_cells(r) if r else ranges_to_cells(glob)
     return out
+
+
+def stake_for_price(price: float, settings: dict) -> float:
+    """The $ stake for a bet at this price. When band-sizing is on, look up the
+    per-band stake (smaller on favorites to fix the win-small/lose-full payoff
+    asymmetry); otherwise the flat per_trade_usd. Never exceeds per_trade_usd's
+    sane ceiling."""
+    base = float(settings.get("per_trade_usd", 25.0))
+    if not settings.get("use_band_sizing"):
+        return base
+    band = _price_band(price)
+    stakes = settings.get("band_stakes") or {}
+    val = stakes.get(band)
+    try:
+        val = float(val)
+    except (TypeError, ValueError):
+        val = base
+    # clamp to (0, 4x base] so a bad config can't blow past guardrails
+    return max(0.0, min(val, base * 4))
 
 
 def entry_band_allows(category: str, price: float, settings: dict) -> tuple[bool, str]:
